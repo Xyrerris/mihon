@@ -61,7 +61,7 @@ if [ -n "$blocked" ]; then
     note "these are denied by this environment's network policy, not by the project."
     note "allow them on the environment (see the network access section of"
     note "https://code.claude.com/docs/en/claude-code-on-the-web) and start a new session."
-    note "SQL-only work still works: see .claude/hooks/README.md"
+    note "schema work still works, SQLDelight included: see .claude/hooks/README.md"
     persist "export MIHON_ANDROID_TOOLCHAIN=unavailable"
     persist "export MIHON_TOOLCHAIN_BLOCKED_HOSTS=\"${blocked# }\""
     # Exit successfully: the session is still usable for everything that does

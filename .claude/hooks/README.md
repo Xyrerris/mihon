@@ -34,17 +34,37 @@ around it.
 
 ## Working without the toolchain
 
-Schema and migration changes under `data/src/main/sqldelight` can be verified
-without Gradle, using the SQLite build that ships with Python:
+The two hosts the toolchain needs are the only ones usually blocked;
+`repo1.maven.org` and `services.gradle.org` normally answer. That is enough to
+run SQLDelight itself, because the compiler, its dialect and the Kotlin plugin
+all live on Maven Central — only the Android Gradle Plugin and the jitpack
+dependencies do not. So schema and migration changes under
+`data/src/main/sqldelight` can be verified in full:
 
 ```sh
+.claude/tools/verify_sqldelight_gradle.sh         # the SQLDelight compiler and migration verification
 python3 .claude/tools/verify_sqldelight.py        # fixtures, backfill, triggers, recalculation
 python3 .claude/tools/verify_migration_schema.py  # fresh install vs. post-migration schema
 ```
 
-The second one is the cheap stand-in for SQLDelight's own migration
-verification: it builds the schema both ways and compares `sqlite_master`.
-Note that these exercise the SQLite *engine*, not SQLDelight's parser, which is
-stricter — a `.sq` file that passes here can still be rejected by
-`./gradlew :data:generateDebugDatabaseInterface`. Run that before considering
-a schema change finished.
+The shell script builds a throwaway JVM-only Gradle project that points the
+real compiler at the real source directory, reading the SQLDelight version,
+dialect and package name out of the build files rather than repeating them. It
+runs the parser and type checker over every `.sq` — the same work as
+`:data:generateDebugDatabaseInterface` — and then verifies the migrations: it
+generates the schema of the revision before the newest migration was added,
+applies what came after it and diffs the result against the schema the `.sq`
+files declare. This project checks no `.db` schema files in, which is why the
+baseline is generated from git instead of read from the tree.
+
+The Python scripts exercise the SQLite *engine* instead, so they cover what the
+compiler cannot: that the triggers fire, that the backfill produces the numbers
+it should, and that recalculation is idempotent. They are also much faster, so
+they are the ones to iterate with; the compiler is stricter about syntax and
+has the final word. `WHERE true`, for instance, is valid SQLite and valid to
+those scripts, but SQLDelight's grammar has no boolean literal and reads it as
+a column name.
+
+None of this compiles Kotlin: every module depends on the Android Gradle
+Plugin, so generated interfaces, mappers and interactors can be written here
+but not built. Say so when reporting work that has not been compiled.

@@ -203,8 +203,10 @@ LEFT JOIN (
 ) AS R
 ON 1 = 1
 -- Required: an INSERT ... SELECT needs a WHERE clause to keep the parser from
--- reading the upsert's ON CONFLICT as part of the join above.
-WHERE true
+-- reading the upsert's ON CONFLICT as part of the join above. SQLite documents
+-- the always-true clause as WHERE true, but SQLDelight's grammar has no boolean
+-- literal and reads that as a column name, so it is spelled out instead.
+WHERE 1 = 1
 ON CONFLICT(manga_id) DO UPDATE SET
     last_read_chapter_id = excluded.last_read_chapter_id,
     last_read_chapter_number = excluded.last_read_chapter_number,
@@ -243,7 +245,7 @@ markAllStale:
 INSERT INTO manga_progress(manga_id, is_stale)
 SELECT _id, 1
 FROM mangas
-WHERE true
+WHERE 1 = 1
 ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
 
 resetIsSyncing:
