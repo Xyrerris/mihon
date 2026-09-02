@@ -26,11 +26,31 @@ The build cannot be provisioned unless the environment's egress policy allows:
 
 If any of these is denied, the hook prints which one, sets
 `MIHON_ANDROID_TOOLCHAIN=unavailable` and exits without failing the session.
-Allow the missing hosts on the environment — see the network access section of
-<https://code.claude.com/docs/en/claude-code-on-the-web> — then start a new
-session. This is an environment setting, not something a session can change
-from the inside, and the egress proxy correctly refuses attempts to route
-around it.
+
+The first two are the ones a policy usually denies, and neither has an
+alternative: `google()` resolves to `dl.google.com/dl/android/maven2`,
+`maven.google.com` only redirects there, and jitpack builds are served nowhere
+else. **Trusted** network access does not cover either — its list has
+`developer.android.com`, which is the documentation, not the repository — so an
+environment that has to build this project needs **Custom**, with *Also include
+default list of common package managers* checked and:
+
+```text
+dl.google.com
+www.jitpack.io
+jitpack.io
+*.frame.claudeusercontent.com
+```
+
+The last line is not for the build: the plan this fork follows lives in an
+artifact, and that is the host artifact content is fetched from. Leave it out
+and a session can no longer read the plan.
+
+This is an environment setting, changed at
+<https://code.claude.com/docs/en/cloud-environments#allow-specific-domains> and
+picked up by the *next* session, not the running one. It is not something a
+session can change from the inside, and the egress proxy correctly refuses
+attempts to route around it.
 
 ## Working without the toolchain
 
