@@ -1,0 +1,252 @@
+-- Materialized reading progress, one row per manga.
+--
+-- Every column except started_at and completed_at is derived from chapters,
+-- history and excluded_scanlators. The derived values are kept here so that the
+-- library no longer has to re-aggregate the whole chapters table on every query.
+--
+-- Timestamps: started_at, completed_at and last_read_at are epoch milliseconds,
+-- matching history.last_read and the domain models. last_modified_at is epoch
+-- seconds, matching the identically named columns on mangas and chapters.
+CREATE TABLE manga_progress(
+    manga_id INTEGER NOT NULL PRIMARY KEY,
+    last_read_chapter_id INTEGER,
+    last_read_chapter_number REAL,
+    last_read_page INTEGER NOT NULL DEFAULT 0,
+    read_chapter_count INTEGER NOT NULL DEFAULT 0,
+    total_chapter_count INTEGER NOT NULL DEFAULT 0,
+    progress_percent REAL NOT NULL DEFAULT 0.0,
+    started_at INTEGER,
+    completed_at INTEGER,
+    last_read_at INTEGER,
+    total_read_duration INTEGER NOT NULL DEFAULT 0,
+    is_stale INTEGER NOT NULL DEFAULT 0,
+    last_modified_at INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0,
+    is_syncing INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(manga_id) REFERENCES mangas (_id)
+    ON DELETE CASCADE,
+    FOREIGN KEY(last_read_chapter_id) REFERENCES chapters (_id)
+    ON DELETE SET NULL
+);
+
+CREATE INDEX manga_progress_percent_index ON manga_progress(progress_percent);
+CREATE INDEX manga_progress_last_read_at_index ON manga_progress(last_read_at);
+CREATE INDEX manga_progress_stale_index ON manga_progress(is_stale) WHERE is_stale = 1;
+
+-- Staleness triggers.
+--
+-- These deliberately do not recompute; they only flag the row so that no write
+-- path can leave the table silently out of date. Recomputation goes through
+-- recalculateForManga, which is the single definition of "progress".
+--
+-- Each WHEN guard reads is_syncing through a subquery that yields NULL once the
+-- parent row is gone, so cascading deletes do not attempt to insert a row for a
+-- manga that no longer exists.
+
+CREATE TRIGGER mark_progress_stale_after_chapter_insert
+AFTER INSERT ON chapters
+WHEN (SELECT is_syncing FROM mangas WHERE _id = new.manga_id) = 0
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (new.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+-- The second statement covers a chapter moved between manga, which leaves the
+-- previous one stale too. Comments stay outside the trigger body: SQLite stores
+-- the body verbatim, so one here would show up as a schema difference against
+-- the identical trigger created by the migration.
+CREATE TRIGGER mark_progress_stale_after_chapter_update
+AFTER UPDATE OF read, last_page_read, manga_id ON chapters
+WHEN (SELECT is_syncing FROM mangas WHERE _id = new.manga_id) = 0
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (new.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+
+    INSERT INTO manga_progress(manga_id, is_stale)
+    SELECT old.manga_id, 1
+    WHERE old.manga_id != new.manga_id
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_chapter_delete
+AFTER DELETE ON chapters
+WHEN (SELECT is_syncing FROM mangas WHERE _id = old.manga_id) = 0
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (old.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_history_insert
+AFTER INSERT ON history
+WHEN (
+    SELECT M.is_syncing
+    FROM chapters C JOIN mangas M ON C.manga_id = M._id
+    WHERE C._id = new.chapter_id
+) = 0
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    SELECT C.manga_id, 1
+    FROM chapters C
+    WHERE C._id = new.chapter_id
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_history_update
+AFTER UPDATE ON history
+WHEN (
+    SELECT M.is_syncing
+    FROM chapters C JOIN mangas M ON C.manga_id = M._id
+    WHERE C._id = new.chapter_id
+) = 0
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    SELECT C.manga_id, 1
+    FROM chapters C
+    WHERE C._id = new.chapter_id
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_history_delete
+AFTER DELETE ON history
+WHEN (
+    SELECT M.is_syncing
+    FROM chapters C JOIN mangas M ON C.manga_id = M._id
+    WHERE C._id = old.chapter_id
+) = 0
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    SELECT C.manga_id, 1
+    FROM chapters C
+    WHERE C._id = old.chapter_id
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_excluded_scanlator_insert
+AFTER INSERT ON excluded_scanlators
+WHEN (SELECT is_syncing FROM mangas WHERE _id = new.manga_id) = 0
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (new.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_excluded_scanlator_delete
+AFTER DELETE ON excluded_scanlators
+WHEN (SELECT is_syncing FROM mangas WHERE _id = old.manga_id) = 0
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (old.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+-- The single definition of "progress". Chapters hidden by an excluded scanlator
+-- are ignored, exactly as libraryView already does.
+--
+-- started_at and completed_at are monotonic: once set they only ever move
+-- earlier, so re-running this never rewrites history. completed_at is cleared
+-- when a new chapter drops the manga back below 100%.
+recalculateForManga:
+INSERT INTO manga_progress(
+    manga_id, last_read_chapter_id, last_read_chapter_number, last_read_page,
+    read_chapter_count, total_chapter_count, progress_percent,
+    started_at, completed_at, last_read_at, total_read_duration, is_stale
+)
+SELECT
+    :mangaId,
+    R.chapter_id,
+    R.chapter_number,
+    coalesce(R.last_page_read, 0),
+    coalesce(A.read_count, 0),
+    coalesce(A.total, 0),
+    CASE WHEN coalesce(A.total, 0) = 0
+         THEN 0.0
+         ELSE (A.read_count * 1.0) / A.total END,
+    CASE WHEN coalesce(A.read_count, 0) > 0
+         THEN coalesce(A.first_read_at, strftime('%s', 'now') * 1000) END,
+    CASE WHEN coalesce(A.total, 0) > 0 AND A.read_count = A.total
+         THEN coalesce(A.last_read_at, strftime('%s', 'now') * 1000) END,
+    A.last_read_at,
+    coalesce(A.duration, 0),
+    0
+FROM (
+    SELECT
+        count(*) AS total,
+        sum(C.read) AS read_count,
+        max(CASE WHEN H.last_read > 0 THEN H.last_read END) AS last_read_at,
+        min(CASE WHEN H.last_read > 0 THEN H.last_read END) AS first_read_at,
+        sum(H.time_read) AS duration
+    FROM chapters C
+    LEFT JOIN excluded_scanlators ES
+    ON C.manga_id = ES.manga_id
+    AND C.scanlator = ES.scanlator
+    LEFT JOIN history H
+    ON C._id = H.chapter_id
+    WHERE C.manga_id = :mangaId
+    AND ES.scanlator IS NULL
+) AS A
+LEFT JOIN (
+    SELECT C._id AS chapter_id, C.chapter_number, C.last_page_read
+    FROM chapters C
+    JOIN history H
+    ON C._id = H.chapter_id
+    LEFT JOIN excluded_scanlators ES
+    ON C.manga_id = ES.manga_id
+    AND C.scanlator = ES.scanlator
+    WHERE C.manga_id = :mangaId
+    AND ES.scanlator IS NULL
+    AND H.last_read > 0
+    ORDER BY H.last_read DESC
+    LIMIT 1
+) AS R
+ON 1 = 1
+-- Required: an INSERT ... SELECT needs a WHERE clause to keep the parser from
+-- reading the upsert's ON CONFLICT as part of the join above.
+WHERE true
+ON CONFLICT(manga_id) DO UPDATE SET
+    last_read_chapter_id = excluded.last_read_chapter_id,
+    last_read_chapter_number = excluded.last_read_chapter_number,
+    last_read_page = excluded.last_read_page,
+    read_chapter_count = excluded.read_chapter_count,
+    total_chapter_count = excluded.total_chapter_count,
+    progress_percent = excluded.progress_percent,
+    last_read_at = excluded.last_read_at,
+    total_read_duration = excluded.total_read_duration,
+    is_stale = 0,
+    started_at = CASE
+        WHEN manga_progress.started_at IS NULL THEN excluded.started_at
+        WHEN excluded.started_at IS NULL THEN manga_progress.started_at
+        ELSE min(manga_progress.started_at, excluded.started_at) END,
+    completed_at = CASE
+        WHEN excluded.completed_at IS NULL THEN NULL
+        WHEN manga_progress.completed_at IS NULL THEN excluded.completed_at
+        ELSE min(manga_progress.completed_at, excluded.completed_at) END;
+
+getProgressByMangaId:
+SELECT *
+FROM manga_progress
+WHERE manga_id = :mangaId;
+
+getStaleMangaIds:
+SELECT manga_id
+FROM manga_progress
+WHERE is_stale = 1;
+
+markStale:
+INSERT INTO manga_progress(manga_id, is_stale)
+VALUES (:mangaId, 1)
+ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+
+markAllStale:
+INSERT INTO manga_progress(manga_id, is_stale)
+SELECT _id, 1
+FROM mangas
+WHERE true
+ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+
+resetIsSyncing:
+UPDATE manga_progress
+SET is_syncing = 0
+WHERE is_syncing = 1;
