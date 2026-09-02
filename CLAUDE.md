@@ -89,10 +89,23 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
   trigger would bump `last_modified_at` on every page read and disturb the
   version counter backup restore uses to resolve conflicts.
 
+## Branches
+
+- `main` mirrors upstream mihon and is never written to from here: no commit,
+  no merge, no rebase, no pull request targeting it. Its worth is precisely
+  that it stays untouched, so it can be trusted as the record of what upstream
+  ships.
+- `main-personal` is this fork's trunk and the repository's default branch.
+  Everything the fork adds lives there, work branches start from it and go back
+  into it, and a pull request targets it.
+- Upstream arrives by bringing `main` up to date from upstream and merging
+  `main` into `main-personal` — in that direction only.
+
 ## Conventions
 
 - Develop on the `claude/<slug>` branch the session is given, commit there and
-  push there. Open a pull request only when asked for one.
+  push there. Open a pull request only when asked for one, and open it against
+  `main-personal`.
 - Commit messages: a short imperative subject, then prose explaining why the
   change looks the way it does and what was considered. `git log` has the
   register.
