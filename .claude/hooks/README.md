@@ -46,6 +46,31 @@ The last line is not for the build: the plan this fork follows lives in an
 artifact, and that is the host artifact content is fetched from. Leave it out
 and a session can no longer read the plan.
 
+The checkbox appears only once **Custom** is selected. If it is missing
+entirely, this list stands on its own without the defaults:
+
+```text
+dl.google.com
+maven.google.com
+www.jitpack.io
+jitpack.io
+repo.maven.apache.org
+repo1.maven.org
+plugins.gradle.org
+services.gradle.org
+release-assets.githubusercontent.com
+claude.ai
+code.claude.com
+*.frame.claudeusercontent.com
+```
+
+Two of those are not obvious. `mavenCentral()` resolves to
+`repo.maven.apache.org`, not to the `repo1.maven.org` alias, and the plugin
+portal redirects there too. And `services.gradle.org` only issues the redirect
+for the wrapper's distribution: the zip itself comes from
+`release-assets.githubusercontent.com`, so an allowlist without it downloads
+nothing and `./gradlew` never starts.
+
 This is an environment setting, changed at
 <https://code.claude.com/docs/en/cloud-environments#allow-specific-domains> and
 picked up by the *next* session, not the running one. It is not something a
