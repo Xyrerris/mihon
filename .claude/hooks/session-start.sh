@@ -90,8 +90,38 @@ export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$SDK_ROOT/platform-tools:$PATH"
 note "accepting SDK licenses"
 yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-note "installing platform-tools and android-$COMPILE_SDK"
-sdkmanager --install "platform-tools" "platforms;android-$COMPILE_SDK" >/dev/null
+# Google publishes minor-versioned platforms for recent levels: API 37 ships as
+# platforms;android-37.0 and up, and asking for the historical major-only name
+# fails outright rather than resolving to one of them. Read the names the
+# repository actually offers, prefer an exact match, and otherwise take the
+# lowest minor of the level the catalog asks for. That is the one the build
+# wants: compileSdk = 37 with no compileSdkMinor resolves to android-37.0, and
+# a later minor is opted into in the build files, not here.
+resolve_platform() {
+    local available
+    available="$(sdkmanager --list 2>/dev/null |
+        sed -n 's/^ *\(platforms;android-[0-9][0-9.]*\) .*/\1/p' | sort -u)"
+    if printf '%s\n' "$available" | grep -qx "platforms;android-$1"; then
+        printf 'platforms;android-%s\n' "$1"
+        return
+    fi
+    printf '%s\n' "$available" | grep "^platforms;android-$1\." | sort -V | head -1
+}
+
+PLATFORM_PACKAGE="$(resolve_platform "$COMPILE_SDK")"
+if [ -z "$PLATFORM_PACKAGE" ]; then
+    note "the SDK repository publishes no platform for android-$COMPILE_SDK"
+    note "check gradle/mihon.versions.toml against sdkmanager --list"
+    persist "export MIHON_ANDROID_TOOLCHAIN=unavailable"
+    exit 0
+fi
+
+note "installing platform-tools and $PLATFORM_PACKAGE"
+if ! sdkmanager --install "platform-tools" "$PLATFORM_PACKAGE" >/dev/null; then
+    note "sdkmanager could not install $PLATFORM_PACKAGE; the session cannot build"
+    persist "export MIHON_ANDROID_TOOLCHAIN=unavailable"
+    exit 0
+fi
 
 # AGP picks its own build-tools, so let it resolve them rather than pinning a
 # version here that would drift out of sync with the plugin.

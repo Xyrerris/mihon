@@ -29,16 +29,24 @@ messages and documentation stay in English, like the rest of the repository.
 
 Sessions on Claude Code on the web get a fresh container, and
 `.claude/hooks/session-start.sh` provisions the Android SDK. It needs
-`dl.google.com` and `www.jitpack.io`, which many egress policies block; when
-they are blocked the hook says so and exports
-`MIHON_ANDROID_TOOLCHAIN=unavailable`. Check that variable before promising
-anything that needs Gradle: without those hosts there is no Android Gradle
-Plugin and no `sqldelight-androidx-driver`, so `./gradlew`, spotless and the
-unit tests are all out of reach, and **no Kotlin can be compiled** — it can be
-written, but say plainly that it was not built.
+`dl.google.com` and `www.jitpack.io`. On an environment whose allowlist carries
+them the whole build works — `./gradlew :app:compileDebugKotlin`, spotless and
+the unit tests included — and the hook exports
+`MIHON_ANDROID_TOOLCHAIN=ready`. Where an egress policy blocks either host the
+hook says which one and exports `MIHON_ANDROID_TOOLCHAIN=unavailable`. Check
+that variable before promising anything that needs Gradle: without those hosts
+there is no Android Gradle Plugin and no `sqldelight-androidx-driver`, so
+**no Kotlin can be compiled** — it can be written, but say plainly that it was
+not built.
 
-Maven Central and `services.gradle.org` normally do answer, which is enough to
-run SQLDelight itself. Schema work is therefore fully verifiable:
+The provisioning is not free: the first build downloads a few hundred MB and
+takes minutes, so start it in the background and do something else meanwhile.
+If the hook did not run in the shell, `local.properties` with `sdk.dir` is all
+Gradle needs to find the SDK.
+
+Maven Central and `services.gradle.org` answer even where the two hosts above
+are blocked, which is enough to run SQLDelight itself. Schema work is therefore
+verifiable in either environment:
 
 ```sh
 .claude/tools/verify_sqldelight_gradle.sh         # SQLDelight compiler + migration verification
