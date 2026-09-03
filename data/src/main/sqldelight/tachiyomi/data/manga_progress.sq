@@ -33,6 +33,13 @@ CREATE INDEX manga_progress_percent_index ON manga_progress(progress_percent);
 CREATE INDEX manga_progress_last_read_at_index ON manga_progress(last_read_at);
 CREATE INDEX manga_progress_stale_index ON manga_progress(is_stale) WHERE is_stale = 1;
 
+-- Nothing maintains last_modified_at yet, so this index is inert today. It is
+-- here because it belongs to the shape of the table rather than to its first
+-- reader: a sync push is a differential backup and selects on
+-- last_modified_at > since. Declaring it with the table costs one line in the
+-- migration that creates it, instead of a migration of its own later.
+CREATE INDEX manga_progress_modified_index ON manga_progress(last_modified_at);
+
 -- Staleness triggers.
 --
 -- These deliberately do not recompute; they only flag the row so that no write
@@ -53,11 +60,21 @@ BEGIN
 END;
 
 -- The second statement covers a chapter moved between manga, which leaves the
--- previous one stale too. Comments stay outside the trigger body: SQLite stores
--- the body verbatim, so one here would show up as a schema difference against
--- the identical trigger created by the migration.
+-- previous one stale too.
+--
+-- scanlator is in the column list because it decides whether
+-- excluded_scanlators hides the chapter from the counts. It changes nothing
+-- today: SQLite fires an UPDATE OF trigger on the columns a statement names in
+-- its SET clause, not on the ones whose value actually changes, and the single
+-- UPDATE in chapters.sq assigns read and last_page_read on every call. It is
+-- listed so that a statement writing scanlator alone, which the sync work may
+-- well add, cannot slip past this trigger.
+--
+-- Comments stay outside the trigger body: SQLite stores the body verbatim, so
+-- one here would show up as a schema difference against the identical trigger
+-- created by the migration.
 CREATE TRIGGER mark_progress_stale_after_chapter_update
-AFTER UPDATE OF read, last_page_read, manga_id ON chapters
+AFTER UPDATE OF read, last_page_read, manga_id, scanlator ON chapters
 WHEN (SELECT is_syncing FROM mangas WHERE _id = new.manga_id) = 0
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)

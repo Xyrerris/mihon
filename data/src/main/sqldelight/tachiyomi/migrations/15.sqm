@@ -27,6 +27,9 @@ CREATE INDEX manga_progress_percent_index ON manga_progress(progress_percent);
 CREATE INDEX manga_progress_last_read_at_index ON manga_progress(last_read_at);
 CREATE INDEX manga_progress_stale_index ON manga_progress(is_stale) WHERE is_stale = 1;
 
+-- Inert until something maintains last_modified_at; see manga_progress.sq.
+CREATE INDEX manga_progress_modified_index ON manga_progress(last_modified_at);
+
 -- Backfill every existing manga in one pass, using the same definition as
 -- recalculateForManga. Doing it set-based keeps the upgrade to a single
 -- statement instead of one round trip per manga.
@@ -105,7 +108,7 @@ BEGIN
 END;
 
 CREATE TRIGGER mark_progress_stale_after_chapter_update
-AFTER UPDATE OF read, last_page_read, manga_id ON chapters
+AFTER UPDATE OF read, last_page_read, manga_id, scanlator ON chapters
 WHEN (SELECT is_syncing FROM mangas WHERE _id = new.manga_id) = 0
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)

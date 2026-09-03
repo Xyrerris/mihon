@@ -63,6 +63,14 @@ scripts are not a substitute for the compiler.
   target the legacy Tachiyomi schema, so type-checking them against the current
   one reports well over a hundred failures at any revision, upstream included.
   The `.sq` files are type-checked either way.
+- `15.sqm` has not reached any installation yet, so a correction to the table
+  it creates still belongs in that file, edited together with the `.sq`. Once a
+  build carries it, the same correction costs a `16.sqm` doing `DROP` and
+  `CREATE`.
+- `verify_sqldelight.py` builds its database from the migration, not from
+  `manga_progress.sq`: it is the `.sqm` triggers that its checks exercise. The
+  two files are held identical by `verify_migration_schema.py` and by the
+  compiler, so a change to one has to be made in both to be tested at all.
 - The compiler is stricter than SQLite. `WHERE true` is valid SQLite but has no
   boolean literal in SQLDelight's grammar, which reads it as a column name;
   write `WHERE 1 = 1`. That clause is not decoration — an `INSERT ... SELECT`
@@ -85,6 +93,26 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
 - Timestamps are epoch milliseconds, matching `history.last_read`, except
   `last_modified_at`, which is in seconds to match the identically named
   columns on `mangas` and `chapters`.
+- The chapter trigger lists every column that can move progress: `read`,
+  `last_page_read`, `manga_id` and `scanlator`. SQLite fires an `UPDATE OF`
+  trigger on the columns a statement names in its `SET` clause, not on the ones
+  whose value changes, so today's single `UPDATE` in `chapters.sq` fires it
+  whatever it writes; the list is what keeps a narrower statement from slipping
+  past.
+- `recursive_triggers` stays at SQLite's default, off: `AppBindings.kt`
+  configures only `isForeignKeyConstraintsEnabled`. It has to stay off, and not
+  because of this table — upstream's `update_last_modified_at_chapters` writes
+  to `chapters` from an `AFTER UPDATE ON chapters` trigger, so turning it on
+  makes an ordinary page read fail with "too many levels of trigger recursion",
+  with `manga_progress` present or absent. The staleness triggers add no
+  recursion of their own: they write only to `manga_progress`, which has no
+  triggers.
+- `last_modified_at` and `version` exist but nothing writes them yet; they are
+  the sync convention, and track B is their first client. When something does
+  maintain them, bump them only when `started_at` or `completed_at` change —
+  the facts a sync actually carries. Bumping them on every recalculation would
+  mark every row modified on every device and defeat the `last_modified_at >
+  since` delta the push is built on.
 - Progress deliberately does not live on `mangas`: that table's `AFTER UPDATE`
   trigger would bump `last_modified_at` on every page read and disturb the
   version counter backup restore uses to resolve conflicts.

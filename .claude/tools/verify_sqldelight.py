@@ -207,6 +207,14 @@ db.execute("UPDATE manga_progress SET is_stale = 0")
 db.execute("DELETE FROM chapters WHERE _id = 403")
 check("chapter delete marks stale", stale(4), 1)
 
+# scanlator decides whether excluded_scanlators hides a chapter from the counts,
+# and an UPDATE OF trigger keys off the columns a SET clause names rather than
+# the ones that change value, so a statement writing scanlator alone must still
+# flag the row
+db.execute("UPDATE manga_progress SET is_stale = 0")
+db.execute("UPDATE chapters SET scanlator = 'Solo' WHERE _id = 401")
+check("scanlator-only update marks stale", stale(4), 1)
+
 # is_syncing guard: bulk restore must not thrash the table
 db.execute("UPDATE manga_progress SET is_stale = 0")
 db.execute("UPDATE mangas SET is_syncing = 1 WHERE _id = 2")
