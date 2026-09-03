@@ -16,13 +16,20 @@ starting a phase. It is written in Italian and splits the work into track A
 (local persistence, phases A1 to A4) and track B (online sync, B1 to B4), with
 the progress UI left out of both.
 
-Phases A1 and A2 are done. `manga_progress`, its queries and migration
-`15.sqm` are in the tree, and so are the `MangaProgress` model and the
+Phases A1 to A3 are done. `manga_progress`, its queries and migration `15.sqm`
+are in the tree, and so are the `MangaProgress` model and the
 `MangaProgressRepository` interface in `domain`, the implementation and mapper
 in `data`, and the `GetMangaProgress` and `RecalculateMangaProgress`
-interactors. Nothing reads the table yet, by design: A3 is where `libraryView`
-joins it and `LibraryManga` starts taking its counts from it, and it is also
-where the gain gets measured, so profile the library emission before and after.
+interactors. `libraryView` reads its counts off the table rather than
+aggregating `chapters`, `MangaProgressMaintainer` rebuilds the rows the triggers
+flag, and the measurement A3 asked for is
+`.claude/tools/benchmark_library_view.py`: 22x on a synthetic library of 1200
+manga. Next is A4.
+
+A3 needed three columns A1 had not planned for — `bookmarked_chapter_count`,
+`latest_upload_at`, `latest_fetch_at`. Without them the view still had to group
+the whole `chapters` table to find them, which bought 1.7x instead of 22x. They
+are in the table for the library's sake, not because they are progress.
 
 The user writes in Italian, so reply in Italian. Code, comments, commit
 messages and documentation stay in English, like the rest of the repository.
@@ -54,9 +61,14 @@ verifiable in either environment:
 .claude/tools/verify_sqldelight_gradle.sh         # SQLDelight compiler + migration verification
 python3 .claude/tools/verify_sqldelight.py        # triggers, backfill, recalculation
 python3 .claude/tools/verify_migration_schema.py  # fresh install vs. post-migration schema
+python3 .claude/tools/benchmark_library_view.py   # libraryView, before and after the change
 ```
 
-Run all three before committing a change under `data/src/main/sqldelight`.
+Run the first three before committing a change under
+`data/src/main/sqldelight`. The fourth is not a gate: it times the tree's
+`libraryView` against the baseline revision's on a synthetic library, and checks
+that the two return the same rows, so it is what to run when a change is
+supposed to make the library cheaper.
 `.claude/hooks/README.md` explains what each one covers and why the Python
 scripts are not a substitute for the compiler.
 
@@ -103,12 +115,31 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
 - Timestamps are epoch milliseconds, matching `history.last_read`, except
   `last_modified_at`, which is in seconds to match the identically named
   columns on `mangas` and `chapters`.
-- The chapter trigger lists every column that can move progress: `read`,
-  `last_page_read`, `manga_id` and `scanlator`. SQLite fires an `UPDATE OF`
-  trigger on the columns a statement names in its `SET` clause, not on the ones
-  whose value changes, so today's single `UPDATE` in `chapters.sq` fires it
-  whatever it writes; the list is what keeps a narrower statement from slipping
-  past.
+- The chapter trigger lists every column a stored value depends on: `read`,
+  `bookmark`, `last_page_read`, `manga_id`, `scanlator`, `date_upload` and
+  `date_fetch`. SQLite fires an `UPDATE OF` trigger on the columns a statement
+  names in its `SET` clause, not on the ones whose value changes, so today's
+  single `UPDATE` in `chapters.sq` fires it whatever it writes; the list is what
+  keeps a narrower statement from slipping past. Adding a column the table
+  stores means adding it here too.
+- `bookmarked_chapter_count`, `latest_upload_at` and `latest_fetch_at` are the
+  three columns that are not progress. They are what `libraryView` needs beyond
+  the reading columns, and leaving them out leaves the view grouping `chapters`
+  anyway, which is the whole cost. Track B has no reason to sync them: they are
+  derived from the chapter list, not from the reader.
+- The library reads the stored values directly, so a row that stays flagged
+  shows stale counts. `MangaProgressMaintainer` is what closes that window: it
+  collects the flagged ids for the life of the process and rebuilds them,
+  conflated so a burst costs one pass. It is started from `App.onCreate`, next
+  to `widgetManager.init(scope)`.
+- A backup restore writes chapters with `mangas.is_syncing` set, which
+  suppresses the triggers, so `BackupRestorer` calls
+  `RecalculateMangaProgress.awaitAll` when it finishes. Note that nothing in the
+  app calls the `resetIsSyncing` queries the `.sq` files declare, so a restored
+  manga keeps `is_syncing = 1` until an ordinary update clears it, and its
+  triggers stay suppressed until then. That is upstream's, and it is worth
+  fixing in A4 rather than here, where clearing the flag would also re-arm
+  upstream's `last_modified_at` and version triggers.
 - `recursive_triggers` stays at SQLite's default, off: `AppBindings.kt`
   configures only `isForeignKeyConstraintsEnabled`. It has to stay off, and not
   because of this table — upstream's `update_last_modified_at_chapters` writes

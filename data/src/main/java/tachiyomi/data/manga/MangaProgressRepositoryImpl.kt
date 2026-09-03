@@ -8,6 +8,7 @@ import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.flow.Flow
 import tachiyomi.data.Database
+import tachiyomi.data.subscribeToList
 import tachiyomi.data.subscribeToOneOrNull
 import tachiyomi.domain.manga.model.MangaProgress
 import tachiyomi.domain.manga.repository.MangaProgressRepository
@@ -35,6 +36,12 @@ class MangaProgressRepositoryImpl(
         return database.manga_progressQueries
             .getStaleMangaIds()
             .awaitAsList()
+    }
+
+    override fun getStaleMangaIdsAsFlow(): Flow<List<Long>> {
+        return database.manga_progressQueries
+            .getStaleMangaIds()
+            .subscribeToList()
     }
 
     override suspend fun recalculate(mangaId: Long) {

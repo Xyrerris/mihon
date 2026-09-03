@@ -63,12 +63,12 @@ def add_manga(mid, title):
     )
 
 
-def add_chapter(cid, mid, num, read, page=0, scanlator=None):
+def add_chapter(cid, mid, num, read, page=0, scanlator=None, bookmark=0, upload=0, fetch=0):
     db.execute(
         "INSERT INTO chapters(_id, manga_id, url, name, scanlator, read, bookmark,"
         " last_page_read, chapter_number, source_order, date_fetch, date_upload)"
-        " VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 0, 0, 0)",
-        (cid, mid, f"/c/{cid}", f"Ch {num}", scanlator, read, page, num),
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+        (cid, mid, f"/c/{cid}", f"Ch {num}", scanlator, read, bookmark, page, num, fetch, upload),
     )
 
 
@@ -79,12 +79,17 @@ def add_history(cid, last_read, time_read=1000):
     )
 
 
-# 1: excluded-scanlator chapter is read but must not count
+# 1: excluded-scanlator chapter is read but must not count. Its bookmark and its
+# dates are the newest of the four, so they also prove that the columns
+# libraryView reads for the shelf honour the same exclusion.
 add_manga(1, "Excluded scanlator")
-add_chapter(101, 1, 1, 1)
-add_chapter(102, 1, 2, 1)
-add_chapter(103, 1, 3, 0)
-add_chapter(104, 1, 4, 1, scanlator="BadGroup")
+add_chapter(101, 1, 1, 1, bookmark=1, upload=NOW_MS - 40 * DAY, fetch=NOW_MS - 39 * DAY)
+add_chapter(102, 1, 2, 1, upload=NOW_MS - 30 * DAY, fetch=NOW_MS - 29 * DAY)
+add_chapter(103, 1, 3, 0, bookmark=1, upload=NOW_MS - 20 * DAY, fetch=NOW_MS - 19 * DAY)
+add_chapter(
+    104, 1, 4, 1, scanlator="BadGroup",
+    bookmark=1, upload=NOW_MS - 10 * DAY, fetch=NOW_MS - 9 * DAY,
+)
 db.execute("INSERT INTO excluded_scanlators(manga_id, scanlator) VALUES (1, 'BadGroup')")
 add_history(101, NOW_MS - 5 * DAY, 500)
 add_history(102, NOW_MS - 2 * DAY, 700)   # most recent -> resume point
@@ -152,6 +157,9 @@ check("m1 started_at", r["started_at"], NOW_MS - 5 * DAY)
 check("m1 duration (excludes BadGroup)", r["total_read_duration"], 1200)
 check("m1 completed_at", r["completed_at"], None)
 check("m1 is_stale", r["is_stale"], 0)
+check("m1 bookmarks (excludes BadGroup)", r["bookmarked_chapter_count"], 2)
+check("m1 latest_upload_at (excludes BadGroup)", r["latest_upload_at"], NOW_MS - 20 * DAY)
+check("m1 latest_fetch_at (excludes BadGroup)", r["latest_fetch_at"], NOW_MS - 19 * DAY)
 
 r = row(2)
 check("m2 percent", r["progress_percent"], 1.0)
@@ -162,6 +170,9 @@ check("m3 total", r["total_chapter_count"], 0)
 check("m3 percent", r["progress_percent"], 0.0)
 check("m3 started_at", r["started_at"], None)
 check("m3 completed_at", r["completed_at"], None)
+check("m3 bookmarks", r["bookmarked_chapter_count"], 0)
+check("m3 latest_upload_at", r["latest_upload_at"], 0)
+check("m3 latest_fetch_at", r["latest_fetch_at"], 0)
 
 r = row(4)
 check("m4 started_at", r["started_at"], None)
@@ -215,6 +226,16 @@ db.execute("UPDATE manga_progress SET is_stale = 0")
 db.execute("UPDATE chapters SET scanlator = 'Solo' WHERE _id = 401")
 check("scanlator-only update marks stale", stale(4), 1)
 
+# same for the columns the shelf reads: bookmark, date_upload and date_fetch are
+# stored on the row now, so a statement writing one of them alone has to flag it
+db.execute("UPDATE manga_progress SET is_stale = 0")
+db.execute("UPDATE chapters SET bookmark = 1 WHERE _id = 402")
+check("bookmark-only update marks stale", stale(4), 1)
+
+db.execute("UPDATE manga_progress SET is_stale = 0")
+db.execute("UPDATE chapters SET date_upload = ? WHERE _id = 402", (NOW_MS,))
+check("date_upload-only update marks stale", stale(4), 1)
+
 # is_syncing guard: bulk restore must not thrash the table
 db.execute("UPDATE manga_progress SET is_stale = 0")
 db.execute("UPDATE mangas SET is_syncing = 1 WHERE _id = 2")
@@ -245,6 +266,10 @@ check("m1 recalc percent", r["progress_percent"], 1.0)
 check("m1 recalc resume chapter", r["last_read_chapter_id"], 104)
 check("m1 recalc clears stale", r["is_stale"], 0)
 check("m1 recalc keeps original started_at", r["started_at"], NOW_MS - 5 * DAY)
+# the exclusion was lifted above, so BadGroup's bookmark and dates now count
+check("m1 recalc bookmarks (filter removed)", r["bookmarked_chapter_count"], 3)
+check("m1 recalc latest_upload_at (filter removed)", r["latest_upload_at"], NOW_MS - 10 * DAY)
+check("m1 recalc latest_fetch_at (filter removed)", r["latest_fetch_at"], NOW_MS - 9 * DAY)
 
 first_completed = r["completed_at"]
 recalc(1)

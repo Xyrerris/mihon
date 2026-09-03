@@ -26,6 +26,7 @@ import logcat.LogPriority
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.data.Database
+import tachiyomi.domain.manga.interactor.RecalculateMangaProgress
 import tachiyomi.i18n.MR
 import java.io.File
 import java.text.SimpleDateFormat
@@ -49,6 +50,7 @@ class BackupRestorer(
     private val extensionStoreRestorer: ExtensionStoreRestorer,
     private val mangaRestorer: MangaRestorer,
     private val backupDecoder: BackupDecoder,
+    private val recalculateMangaProgress: RecalculateMangaProgress,
 ) {
 
     @AssistedFactory
@@ -77,6 +79,12 @@ class BackupRestorer(
             } catch (e: Exception) {
                 logcat(LogPriority.ERROR, e) { "Failed to invalidate download cache after restore" }
             }
+
+            // The restore updates a manga it already knows with is_syncing set, which suppresses
+            // the staleness triggers, so nothing flags the rows the library now reads its counts
+            // from. Rebuilding the table outright is the recovery path for exactly that: it costs
+            // one pass over the library and it is the only thing that leaves the counts correct.
+            recalculateMangaProgress.awaitAll()
         }
 
         val time = System.currentTimeMillis() - startTime

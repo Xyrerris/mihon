@@ -63,6 +63,7 @@ import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.preference.Preference
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.core.common.util.system.logcat
+import tachiyomi.domain.manga.service.MangaProgressMaintainer
 import tachiyomi.domain.source.service.SourceManager
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.widget.WidgetManager
@@ -93,6 +94,8 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
     @Inject private lateinit var sourceManager: SourceManager
 
     @Inject private lateinit var widgetManager: WidgetManager
+
+    @Inject private lateinit var mangaProgressMaintainer: MangaProgressMaintainer
 
     @Inject private lateinit var injektMetroInteropModule: MetroInteropModule
 
@@ -172,6 +175,10 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
 
         // Updates widget update
         widgetManager.init(scope)
+
+        // Rebuilds the manga_progress rows the database triggers flag, which is what libraryView
+        // reads its counts from.
+        mangaProgressMaintainer.init(scope)
 
         if (!LogcatLogger.isInstalled) {
             val minLogPriority = when {

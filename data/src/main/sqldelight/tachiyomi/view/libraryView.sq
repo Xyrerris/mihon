@@ -1,33 +1,29 @@
+-- One row per library entry, with the numbers the library screen sorts and
+-- filters on.
+--
+-- Those numbers used to be a GROUP BY over the whole chapters table, joined to
+-- history, recomputed on every emission of the library flow -- which is every
+-- write to mangas, chapters or history, page reads included. They are read off
+-- manga_progress instead, where the staleness triggers and recalculateForManga
+-- keep them up to date. The join is on the primary key, so the cost is now
+-- linear in library entries rather than in chapters.
+--
+-- A manga with no row yet reads as zero, which is what a manga with no chapters
+-- is worth anyway. A row flagged is_stale reads as its previous value until
+-- MangaProgressMaintainer recalculates it, a window of one recalculation pass.
 CREATE VIEW libraryView AS
 SELECT
     M.*,
-    coalesce(C.total, 0) AS totalCount,
-    coalesce(C.readCount, 0) AS readCount,
-    coalesce(C.latestUpload, 0) AS latestUpload,
-    coalesce(C.fetchedAt, 0) AS chapterFetchedAt,
-    coalesce(C.lastRead, 0) AS lastRead,
-    coalesce(C.bookmarkCount, 0) AS bookmarkCount,
+    coalesce(P.total_chapter_count, 0) AS totalCount,
+    coalesce(P.read_chapter_count, 0) AS readCount,
+    coalesce(P.latest_upload_at, 0) AS latestUpload,
+    coalesce(P.latest_fetch_at, 0) AS chapterFetchedAt,
+    coalesce(P.last_read_at, 0) AS lastRead,
+    coalesce(P.bookmarked_chapter_count, 0) AS bookmarkCount,
     coalesce(MC.categories, '0') AS categories
 FROM mangas M
-LEFT JOIN (
-    SELECT
-        chapters.manga_id,
-        count(*) AS total,
-        sum(read) AS readCount,
-        coalesce(max(chapters.date_upload), 0) AS latestUpload,
-        coalesce(max(history.last_read), 0) AS lastRead,
-        coalesce(max(chapters.date_fetch), 0) AS fetchedAt,
-        sum(chapters.bookmark) AS bookmarkCount
-    FROM chapters
-    LEFT JOIN excluded_scanlators
-    ON chapters.manga_id = excluded_scanlators.manga_id
-    AND chapters.scanlator = excluded_scanlators.scanlator
-    LEFT JOIN history
-    ON chapters._id = history.chapter_id
-    WHERE excluded_scanlators.scanlator IS NULL
-    GROUP BY chapters.manga_id
-) AS C
-ON M._id = C.manga_id
+LEFT JOIN manga_progress P
+ON P.manga_id = M._id
 LEFT JOIN (
     SELECT manga_id, group_concat(category_id) AS categories
     FROM mangas_categories
