@@ -16,11 +16,13 @@ starting a phase. It is written in Italian and splits the work into track A
 (local persistence, phases A1 to A4) and track B (online sync, B1 to B4), with
 the progress UI left out of both.
 
-Phase A1 is done: `manga_progress`, its queries and migration `15.sqm` are in
-the tree and verified with the tools below. Nothing reads the table yet, by
-design. Next is A2 — the `MangaProgress` model, the repository interface in
-`domain`, its implementation, mapper and interactors in `data` — which ends
-with the project compiling and no consumers.
+Phases A1 and A2 are done. `manga_progress`, its queries and migration
+`15.sqm` are in the tree, and so are the `MangaProgress` model and the
+`MangaProgressRepository` interface in `domain`, the implementation and mapper
+in `data`, and the `GetMangaProgress` and `RecalculateMangaProgress`
+interactors. Nothing reads the table yet, by design: A3 is where `libraryView`
+joins it and `LibraryManga` starts taking its counts from it, and it is also
+where the gain gets measured, so profile the library emission before and after.
 
 The user writes in Italian, so reply in Italian. Code, comments, commit
 messages and documentation stay in English, like the rest of the repository.
