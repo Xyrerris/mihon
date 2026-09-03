@@ -9,7 +9,10 @@ import eu.kanade.tachiyomi.data.backup.models.BackupCategory
 import eu.kanade.tachiyomi.data.backup.models.BackupChapter
 import eu.kanade.tachiyomi.data.backup.models.BackupHistory
 import eu.kanade.tachiyomi.data.backup.models.BackupManga
+import eu.kanade.tachiyomi.data.backup.models.BackupMangaProgress
 import eu.kanade.tachiyomi.data.backup.models.BackupTracking
+import eu.kanade.tachiyomi.data.sync.MangaProgressFacts
+import eu.kanade.tachiyomi.data.sync.SyncMerger
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import tachiyomi.data.Database
@@ -18,13 +21,13 @@ import tachiyomi.data.UpdateStrategyColumnAdapter
 import tachiyomi.domain.category.interactor.GetCategories
 import tachiyomi.domain.chapter.interactor.GetChaptersByMangaId
 import tachiyomi.domain.chapter.model.Chapter
+import tachiyomi.domain.history.model.History
 import tachiyomi.domain.manga.interactor.FetchInterval
 import tachiyomi.domain.manga.interactor.GetMangaByUrlAndSourceId
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.track.interactor.GetTracks
 import tachiyomi.domain.track.interactor.InsertTrack
 import tachiyomi.domain.track.model.Track
-import java.util.Date
 import kotlin.math.max
 import kotlin.time.Clock
 
@@ -78,6 +81,7 @@ class MangaRestorer(
                 history = backupManga.history,
                 tracks = backupManga.tracking,
                 excludedScanlators = backupManga.excludedScanlators,
+                progress = backupManga.progress,
             )
         }
     }
@@ -164,23 +168,7 @@ class MangaRestorer(
                 }
 
                 // Update to an existing chapter
-                var updatedChapter = chapter
-                    .copyFrom(dbChapter)
-                    .copy(
-                        id = dbChapter.id,
-                        bookmark = chapter.bookmark || dbChapter.bookmark,
-                    )
-                if (dbChapter.read && !updatedChapter.read) {
-                    updatedChapter = updatedChapter.copy(
-                        read = true,
-                        lastPageRead = dbChapter.lastPageRead,
-                    )
-                } else if (updatedChapter.lastPageRead == 0L && dbChapter.lastPageRead != 0L) {
-                    updatedChapter = updatedChapter.copy(
-                        lastPageRead = dbChapter.lastPageRead,
-                    )
-                }
-                updatedChapter
+                SyncMerger.mergeChapter(local = dbChapter, remote = chapter)
             }
             .partition { it.id > 0 }
 
@@ -278,12 +266,14 @@ class MangaRestorer(
         history: List<BackupHistory>,
         tracks: List<BackupTracking>,
         excludedScanlators: List<String>,
+        progress: BackupMangaProgress?,
     ): Manga {
         restoreCategories(manga, categories, backupCategories)
         restoreChapters(manga, chapters)
         restoreTracking(manga, tracks)
         restoreHistory(manga, history)
         restoreExcludedScanlators(manga, excludedScanlators)
+        restoreProgress(manga, progress)
         updateManga.awaitUpdateFetchInterval(manga, timeZone, now, currentFetchWindow)
         return manga
     }
@@ -343,14 +333,19 @@ class MangaRestorer(
             }
 
             // Update history entry
-            item.copy(
-                id = dbHistory._id,
-                chapterId = dbHistory.chapter_id,
-                readAt = max(item.readAt?.time ?: 0L, dbHistory.last_read?.time ?: 0L)
-                    .takeIf { it > 0L }
-                    ?.let { Date(it) },
-                readDuration = max(item.readDuration, dbHistory.time_read) - dbHistory.time_read,
+            val merged = SyncMerger.mergeHistory(
+                local = History(
+                    id = dbHistory._id,
+                    chapterId = dbHistory.chapter_id,
+                    readAt = dbHistory.last_read,
+                    readDuration = dbHistory.time_read,
+                ),
+                remote = item,
             )
+
+            // upsert adds the duration it is handed to the one already stored, so what it takes is
+            // the difference between the merged value and that one.
+            merged.copy(readDuration = merged.readDuration - dbHistory.time_read)
         }
 
         if (toUpdate.isEmpty()) return
@@ -435,5 +430,28 @@ class MangaRestorer(
         val toInsert = excludedScanlators.filter { it !in existingExcludedScanlators }
         if (toInsert.isEmpty()) return
         toInsert.forEach { database.excluded_scanlatorsQueries.insert(manga.id, it) }
+    }
+
+    /**
+     * Merges the two reading dates the backup carries. Nothing else of manga_progress is restored:
+     * the counts, the percentage and the resume point are recomputed from the chapters and history
+     * restored above, by the recalculation BackupRestorer runs once the restore is over.
+     *
+     * A backup written before those dates existed carries none, and this is where it costs nothing.
+     */
+    private suspend fun restoreProgress(manga: Manga, progress: BackupMangaProgress?) {
+        if (progress == null) return
+
+        val local = database.manga_progressQueries
+            .getProgressFactsByMangaId(manga.id, ::MangaProgressFacts)
+            .awaitAsOneOrNull()
+        val merged = SyncMerger.mergeProgress(local = local, remote = progress.toFacts())
+        if (merged == local) return
+
+        database.manga_progressQueries.upsertProgressFacts(
+            mangaId = manga.id,
+            startedAt = merged.startedAt,
+            completedAt = merged.completedAt,
+        )
     }
 }

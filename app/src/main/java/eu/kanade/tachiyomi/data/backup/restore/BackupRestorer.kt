@@ -80,6 +80,14 @@ class BackupRestorer(
                 logcat(LogPriority.ERROR, e) { "Failed to invalidate download cache after restore" }
             }
 
+            // Every staleness trigger is guarded on mangas.is_syncing, which the restore sets on
+            // each manga it updates, so a manga left flagged is one whose progress quietly stops
+            // being maintained from here on. Nothing clears it deliberately today: the fetch
+            // interval update that ends each entry's restore happens to write a zero, which is a
+            // side effect to depend on rather than a guarantee. This is the write that means it,
+            // and it touches only the rows that are actually still flagged.
+            database.mangasQueries.resetIsSyncing()
+
             // The restore updates a manga it already knows with is_syncing set, which suppresses
             // the staleness triggers, so nothing flags the rows the library now reads its counts
             // from. Rebuilding the table outright is the recovery path for exactly that: it costs

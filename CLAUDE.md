@@ -16,15 +16,23 @@ starting a phase. It is written in Italian and splits the work into track A
 (local persistence, phases A1 to A4) and track B (online sync, B1 to B4), with
 the progress UI left out of both.
 
-Phases A1 to A3 are done. `manga_progress`, its queries and migration `15.sqm`
-are in the tree, and so are the `MangaProgress` model and the
-`MangaProgressRepository` interface in `domain`, the implementation and mapper
-in `data`, and the `GetMangaProgress` and `RecalculateMangaProgress`
-interactors. `libraryView` reads its counts off the table rather than
-aggregating `chapters`, `MangaProgressMaintainer` rebuilds the rows the triggers
-flag, and the measurement A3 asked for is
-`.claude/tools/benchmark_library_view.py`: 22x on a synthetic library of 1200
-manga. Next is A4.
+Track A is done. `manga_progress`, its queries and migration `15.sqm` are in
+the tree, and so are the `MangaProgress` model and the `MangaProgressRepository`
+interface in `domain`, the implementation and mapper in `data`, and the
+`GetMangaProgress` and `RecalculateMangaProgress` interactors. `libraryView`
+reads its counts off the table rather than aggregating `chapters`,
+`MangaProgressMaintainer` rebuilds the rows the triggers flag, and the
+measurement A3 asked for is `.claude/tools/benchmark_library_view.py`: 22x on a
+synthetic library of 1200 manga.
+
+A4 closed the loop between devices. `SyncMerger` is where the merge rules live
+now, for the backup restore and for the sync that will reuse it; the backup
+carries `started_at` and `completed_at` as `BackupManga.progress`;
+`LibraryUpdateJob` reconciles rows no trigger flagged; and `BackupRestorer`
+clears `mangas.is_syncing` on purpose rather than by side effect. Next is B1,
+which is the settings screen and the preferences behind it, and nothing else:
+the plan wants it shippable on its own, with the switch off and nothing behind
+it yet.
 
 A3 needed three columns A1 had not planned for — `bookmarked_chapter_count`,
 `latest_upload_at`, `latest_fetch_at`. Without them the view still had to group
@@ -59,7 +67,7 @@ verifiable in either environment:
 
 ```sh
 .claude/tools/verify_sqldelight_gradle.sh         # SQLDelight compiler + migration verification
-python3 .claude/tools/verify_sqldelight.py        # triggers, backfill, recalculation
+python3 .claude/tools/verify_sqldelight.py        # triggers, backfill, recalculation, merge, divergence
 python3 .claude/tools/verify_migration_schema.py  # fresh install vs. post-migration schema
 python3 .claude/tools/benchmark_library_view.py   # libraryView, before and after the change
 ```
@@ -134,12 +142,15 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
   to `widgetManager.init(scope)`.
 - A backup restore writes chapters with `mangas.is_syncing` set, which
   suppresses the triggers, so `BackupRestorer` calls
-  `RecalculateMangaProgress.awaitAll` when it finishes. Note that nothing in the
-  app calls the `resetIsSyncing` queries the `.sq` files declare, so a restored
-  manga keeps `is_syncing = 1` until an ordinary update clears it, and its
-  triggers stay suppressed until then. That is upstream's, and it is worth
-  fixing in A4 rather than here, where clearing the flag would also re-arm
-  upstream's `last_modified_at` and version triggers.
+  `RecalculateMangaProgress.awaitAll` when it finishes, and calls
+  `mangasQueries.resetIsSyncing` just before it. The flag was already being
+  cleared per manga, but only by accident: the fetch-interval update that ends
+  each entry's restore happens to write `is_syncing = 0`. Every progress trigger
+  is guarded on that column, so a manga left flagged is a manga whose progress
+  silently stops being maintained — too much to hang on a side effect. The
+  explicit reset matches only rows still flagged, and the one trigger it fires
+  on those, `update_last_modified_at_mangas`, moves a timestamp the restore has
+  already moved.
 - `recursive_triggers` stays at SQLite's default, off: `AppBindings.kt`
   configures only `isForeignKeyConstraintsEnabled`. It has to stay off, and not
   because of this table — upstream's `update_last_modified_at_chapters` writes
@@ -148,6 +159,29 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
   with `manga_progress` present or absent. The staleness triggers add no
   recursion of their own: they write only to `manga_progress`, which has no
   triggers.
+- The merge rules are `SyncMerger`'s and nowhere else's: `read` is an OR,
+  `last_page_read` and both history columns are maxima, `bookmark` is
+  last-write-wins on `chapters.version`, and `started_at`/`completed_at` take
+  the earlier of the two, with null meaning "this device does not know" rather
+  than "it did not happen". The restore used to carry its own copy of these
+  inline, and two of them were wrong for a merge: `bookmark` was an OR, so a
+  bookmark removed on one device came back at the next restore, and
+  `last_page_read` took the backup's value rather than the further of the two.
+  Track B's sync is the second client, which is the reason they are a pure
+  function with no database in sight.
+- A backup carries `started_at` and `completed_at` and nothing else of the
+  table: `BackupMangaProgress` at `@ProtoNumber(113)`, written under the history
+  option because that is what those two dates are. The rest of the row is
+  derived, so the `awaitAll` at the end of the restore rebuilds it. A backup
+  written before the field existed decodes with `progress = null` and merges as
+  a no-op, which `BackupMangaProgressTest` pins down against a message that
+  genuinely lacks the field.
+- `getDivergentMangaIds` is the consistency net phase A4 owed the plan: it
+  recomputes the six columns `libraryView` reads and returns the manga whose
+  stored row disagrees, including one with chapters and no row at all.
+  `LibraryUpdateJob` rebuilds whatever it names. It is the one query that still
+  pays the aggregate the table exists to avoid, which is why it runs once per
+  library update and not on the library flow.
 - `last_modified_at` and `version` exist but nothing writes them yet; they are
   the sync convention, and track B is their first client. When something does
   maintain them, bump them only when `started_at` or `completed_at` change —

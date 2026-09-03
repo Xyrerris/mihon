@@ -11,6 +11,8 @@ interface MangaProgressRepository {
 
     suspend fun getStaleMangaIds(): List<Long>
 
+    suspend fun getDivergentMangaIds(): List<Long>
+
     fun getStaleMangaIdsAsFlow(): Flow<List<Long>>
 
     suspend fun recalculate(mangaId: Long)

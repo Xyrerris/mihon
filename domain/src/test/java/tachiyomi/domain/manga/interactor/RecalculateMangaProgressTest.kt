@@ -66,6 +66,26 @@ class RecalculateMangaProgressTest {
     }
 
     @Test
+    fun `When rows have diverged expect them rebuilt without being flagged first`() = runTest {
+        coEvery { mangaProgressRepository.getDivergentMangaIds() } returns listOf(2L, 5L)
+        coEvery { mangaProgressRepository.recalculateAll(any()) } just Runs
+
+        recalculateMangaProgress.awaitDivergent() shouldBe 2
+
+        coVerify { mangaProgressRepository.recalculateAll(listOf(2L, 5L)) }
+        coVerify(exactly = 0) { mangaProgressRepository.markAllStale() }
+    }
+
+    @Test
+    fun `When nothing has diverged expect no recalculation at all`() = runTest {
+        coEvery { mangaProgressRepository.getDivergentMangaIds() } returns emptyList()
+
+        recalculateMangaProgress.awaitDivergent() shouldBe 0
+
+        coVerify(exactly = 0) { mangaProgressRepository.recalculateAll(any()) }
+    }
+
+    @Test
     fun `When recalculating one manga fails expect failure reported`() = runTest {
         coEvery { mangaProgressRepository.recalculate(any()) } throws IllegalStateException("boom")
 

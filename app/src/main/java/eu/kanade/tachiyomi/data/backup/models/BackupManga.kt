@@ -46,6 +46,9 @@ class BackupManga(
     @ProtoNumber(110) var notes: String = "",
     @ProtoNumber(111) var initialized: Boolean = false,
     @ProtoNumber(112) var memo: ByteArray = JsonObjectEmptyBytes,
+    // The reading progress a device cannot derive on its own; see BackupMangaProgress. Absent in
+    // every backup written before it existed, which the restore treats as nothing to merge.
+    @ProtoNumber(113) var progress: BackupMangaProgress? = null,
 ) {
     fun getMangaImpl(): Manga {
         return Manga.create().copy(

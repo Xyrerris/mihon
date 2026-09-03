@@ -64,6 +64,7 @@ import tachiyomi.domain.library.service.LibraryPreferences.Companion.MANGA_OUTSI
 import tachiyomi.domain.manga.interactor.FetchInterval
 import tachiyomi.domain.manga.interactor.GetLibraryManga
 import tachiyomi.domain.manga.interactor.GetManga
+import tachiyomi.domain.manga.interactor.RecalculateMangaProgress
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.model.SourceNotInstalledException
 import tachiyomi.domain.source.service.SourceManager
@@ -101,6 +102,8 @@ class LibraryUpdateJob(private val context: Context, workerParams: WorkerParamet
 
     @Inject private lateinit var notifier: LibraryUpdateNotifier
 
+    @Inject private lateinit var recalculateMangaProgress: RecalculateMangaProgress
+
     private var mangaToUpdate: List<LibraryManga> = mutableListOf()
 
     override suspend fun doWork(): Result {
@@ -130,6 +133,13 @@ class LibraryUpdateJob(private val context: Context, workerParams: WorkerParamet
         return withIOContext {
             try {
                 updateChapterList()
+
+                // The writes above went through the staleness triggers, and MangaProgressMaintainer
+                // has already rebuilt what they flagged. This is the other half: the rows nothing
+                // flagged and that are wrong regardless. Once per update is where a check that
+                // costs a pass over the chapters table belongs.
+                recalculateMangaProgress.awaitDivergent()
+
                 Result.success()
             } catch (e: Exception) {
                 if (e is CancellationException) {

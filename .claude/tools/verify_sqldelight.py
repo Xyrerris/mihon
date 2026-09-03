@@ -1,5 +1,6 @@
-"""Exercise the manga_progress schema, migration 15 backfill and staleness triggers
-against a real SQLite engine, using the project's own DDL as the starting point."""
+"""Exercise the manga_progress schema, migration 15 backfill, staleness triggers,
+the merge facts and the divergence check against a real SQLite engine, using the
+project's own DDL as the starting point."""
 import os
 import re
 import subprocess
@@ -307,6 +308,103 @@ check("resume chapter FK is set to NULL", row(1)["last_read_chapter_id"], None)
 check("deleting the resume chapter marks stale", row(1)["is_stale"], 1)
 recalc(1)
 check("recalc picks a new resume chapter", row(1)["last_read_chapter_id"] != resume, True)
+
+# --- progress facts, the merge write --------------------------------------
+print("\nprogress facts:")
+FACTS = named_query(f"{SQ}/manga_progress.sq", "getProgressFactsByMangaId").replace(":mangaId", "?")
+UPSERT_FACTS = (
+    named_query(f"{SQ}/manga_progress.sq", "upsertProgressFacts")
+    .replace(":mangaId", "?")
+    .replace(":startedAt", "?")
+    .replace(":completedAt", "?")
+)
+
+
+def facts(mid):
+    return db.execute(FACTS, (mid,)).fetchone()
+
+
+def set_facts(mid, started, completed):
+    db.execute(UPSERT_FACTS, (mid, started, completed))
+
+
+started, completed = facts(7)
+check("m7 has both facts to merge against", (started is not None, completed is not None), (True, True))
+
+# a backup from a device that started the manga a month earlier
+earlier_start = started - 30 * DAY
+set_facts(7, earlier_start, completed)
+check("merged started_at is stored", facts(7)[0], earlier_start)
+check("writing facts flags the row", stale(7), 1)
+recalc(7)
+check("recalculation keeps the merged started_at", facts(7)[0], earlier_start)
+check("recalculation clears the flag", stale(7), 0)
+
+# and one that finished it earlier
+earlier_completed = completed - 10 * DAY
+set_facts(7, earlier_start, earlier_completed)
+recalc(7)
+check("recalculation keeps the merged completed_at", facts(7)[1], earlier_completed)
+
+# the insert path: a manga whose row does not exist yet
+db.execute("DELETE FROM manga_progress WHERE manga_id = 7")
+set_facts(7, earlier_start, None)
+check("facts on a manga with no row insert one", facts(7), (earlier_start, None))
+check("the inserted row is flagged", stale(7), 1)
+recalc(7)
+
+# a backup claiming a manga this device has not finished: the recalculation
+# clears completed_at, the same way a new chapter does
+set_facts(4, None, NOW_MS - 50 * DAY)
+recalc(4)
+check("completed_at the chapter list does not back is cleared", facts(4)[1], None)
+
+# --- getDivergentMangaIds -------------------------------------------------
+print("\ngetDivergentMangaIds:")
+DIVERGENT = named_query(f"{SQ}/manga_progress.sq", "getDivergentMangaIds")
+
+
+def divergent():
+    return sorted(r[0] for r in db.execute(DIVERGENT).fetchall())
+
+
+for mid in [r[0] for r in db.execute("SELECT _id FROM mangas").fetchall()]:
+    recalc(mid)
+check("nothing diverges once every row is recalculated", divergent(), [])
+
+
+def unseen_write(mid, statement, params=()):
+    """A write the triggers do not see, which is what the check exists to catch."""
+    db.execute("UPDATE mangas SET is_syncing = 1 WHERE _id = ?", (mid,))
+    db.execute(statement, params)
+    db.execute("UPDATE mangas SET is_syncing = 0 WHERE _id = ?", (mid,))
+
+
+unseen_write(4, "UPDATE chapters SET read = 1 WHERE _id = 401")
+check("a read no trigger saw diverges", divergent(), [4])
+check("and nothing flagged the row", stale(4), 0)
+recalc(4)
+check("recalculating it settles the divergence", divergent(), [])
+
+unseen_write(5, "UPDATE chapters SET bookmark = 1 WHERE _id = 502")
+check("a bookmark no trigger saw diverges", divergent(), [5])
+recalc(5)
+
+unseen_write(5, "UPDATE chapters SET date_upload = ? WHERE _id = 502", (NOW_MS,))
+check("an upload date no trigger saw diverges", divergent(), [5])
+recalc(5)
+
+unseen_write(5, "INSERT INTO history(chapter_id, last_read, time_read) VALUES (502, ?, 10)", (NOW_MS,))
+check("a read date no trigger saw diverges", divergent(), [5])
+recalc(5)
+
+db.execute("DELETE FROM manga_progress WHERE manga_id = 5")
+check("a manga with chapters and no row diverges", divergent(), [5])
+recalc(5)
+check("recalculation creates the missing row", divergent(), [])
+
+db.execute("DELETE FROM manga_progress WHERE manga_id = 3")
+check("a manga with no chapters and no row does not", divergent(), [])
 
 db.commit()
 print()

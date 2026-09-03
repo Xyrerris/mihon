@@ -278,10 +278,76 @@ SELECT *
 FROM manga_progress
 WHERE manga_id = :mangaId;
 
+-- started_at and completed_at on their own: the two columns a merge has to
+-- carry, because they are the only ones a device cannot derive from the
+-- chapters and history it holds. Everything else on the row is recomputed by
+-- recalculateForManga once the merge is in.
+getProgressFactsByMangaId:
+SELECT started_at, completed_at
+FROM manga_progress
+WHERE manga_id = :mangaId;
+
+-- Writes the merged facts back. The caller has already applied the merge rule,
+-- so this sets what it is given rather than taking a minimum of its own: the
+-- rule lives in SyncMerger, in one place, for the restore and for the sync that
+-- comes after it.
+--
+-- The row is flagged rather than recomputed, like the triggers do, so the
+-- derived columns are rebuilt by whoever recalculates next.
+upsertProgressFacts:
+INSERT INTO manga_progress(manga_id, started_at, completed_at, is_stale)
+VALUES (:mangaId, :startedAt, :completedAt, 1)
+ON CONFLICT(manga_id) DO UPDATE SET
+    started_at = excluded.started_at,
+    completed_at = excluded.completed_at,
+    is_stale = 1;
+
 getStaleMangaIds:
 SELECT manga_id
 FROM manga_progress
 WHERE is_stale = 1;
+
+-- The consistency net. The triggers cover every write path the app has today,
+-- but a future one that reaches chapters or history without firing them would
+-- leave the library showing numbers that are quietly wrong, with nothing
+-- flagged to say so. This asks the question the other way round: it recomputes
+-- what the six columns libraryView reads should be and returns the manga whose
+-- stored row disagrees.
+--
+-- It is the aggregate that materializing the table removed from the library
+-- flow, which is why it runs once per library update rather than per emission.
+-- A manga with chapters and no row at all shows up here too, as zero against a
+-- non-zero count.
+getDivergentMangaIds:
+SELECT M._id
+FROM mangas M
+LEFT JOIN manga_progress P
+ON P.manga_id = M._id
+LEFT JOIN (
+    SELECT
+        C.manga_id AS manga_id,
+        count(*) AS total,
+        sum(C.read) AS read_count,
+        sum(C.bookmark) AS bookmark_count,
+        max(CASE WHEN H.last_read > 0 THEN H.last_read END) AS last_read_at,
+        max(C.date_upload) AS latest_upload,
+        max(C.date_fetch) AS latest_fetch
+    FROM chapters C
+    LEFT JOIN excluded_scanlators ES
+    ON C.manga_id = ES.manga_id
+    AND C.scanlator = ES.scanlator
+    LEFT JOIN history H
+    ON C._id = H.chapter_id
+    WHERE ES.scanlator IS NULL
+    GROUP BY C.manga_id
+) AS A
+ON A.manga_id = M._id
+WHERE coalesce(P.total_chapter_count, 0) != coalesce(A.total, 0)
+OR coalesce(P.read_chapter_count, 0) != coalesce(A.read_count, 0)
+OR coalesce(P.bookmarked_chapter_count, 0) != coalesce(A.bookmark_count, 0)
+OR coalesce(P.last_read_at, 0) != coalesce(A.last_read_at, 0)
+OR coalesce(P.latest_upload_at, 0) != coalesce(A.latest_upload, 0)
+OR coalesce(P.latest_fetch_at, 0) != coalesce(A.latest_fetch, 0);
 
 markStale:
 INSERT INTO manga_progress(manga_id, is_stale)

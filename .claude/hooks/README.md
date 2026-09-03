@@ -88,7 +88,7 @@ dependencies do not. So schema and migration changes under
 
 ```sh
 .claude/tools/verify_sqldelight_gradle.sh         # the SQLDelight compiler and migration verification
-python3 .claude/tools/verify_sqldelight.py        # fixtures, backfill, triggers, recalculation
+python3 .claude/tools/verify_sqldelight.py        # backfill, triggers, recalculation, merge, divergence
 python3 .claude/tools/verify_migration_schema.py  # fresh install vs. post-migration schema
 ```
 
@@ -104,9 +104,10 @@ baseline is generated from git instead of read from the tree.
 
 The Python scripts exercise the SQLite *engine* instead, so they cover what the
 compiler cannot: that the triggers fire, that the backfill produces the numbers
-it should, and that recalculation is idempotent. They are also much faster, so
-they are the ones to iterate with; the compiler is stricter about syntax and
-has the final word. `WHERE true`, for instance, is valid SQLite and valid to
+it should, that recalculation is idempotent, that a merged `started_at` survives
+it, and that the divergence check sees a write the triggers did not. They are
+also much faster, so they are the ones to iterate with; the compiler is stricter
+about syntax and has the final word. `WHERE true`, for instance, is valid SQLite and valid to
 those scripts, but SQLDelight's grammar has no boolean literal and reads it as
 a column name.
 

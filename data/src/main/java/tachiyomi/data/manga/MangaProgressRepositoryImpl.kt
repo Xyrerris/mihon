@@ -38,6 +38,12 @@ class MangaProgressRepositoryImpl(
             .awaitAsList()
     }
 
+    override suspend fun getDivergentMangaIds(): List<Long> {
+        return database.manga_progressQueries
+            .getDivergentMangaIds()
+            .awaitAsList()
+    }
+
     override fun getStaleMangaIdsAsFlow(): Flow<List<Long>> {
         return database.manga_progressQueries
             .getStaleMangaIds()

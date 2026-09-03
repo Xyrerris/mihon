@@ -42,6 +42,35 @@ class RecalculateMangaProgress(
     }
 
     /**
+     * Rebuilds every row whose stored counts no longer match the chapter list, and returns how
+     * many there were.
+     *
+     * There should never be one: every write path the app has today goes through a staleness
+     * trigger, and MangaProgressMaintainer rebuilds what they flag. This is for the write path
+     * they do not see -- one added later, or one that reaches the database from outside the app --
+     * because without it the failure mode is a library quietly showing the wrong numbers, with
+     * nothing flagged to say so. It costs the aggregate that materializing the table took out of
+     * the library flow, which is why it belongs to the library update and not to every emission.
+     *
+     * A non-zero result is worth knowing about: it means a write escaped the triggers.
+     */
+    suspend fun awaitDivergent(): Int {
+        return try {
+            val mangaIds = mangaProgressRepository.getDivergentMangaIds()
+            if (mangaIds.isNotEmpty()) {
+                logcat(LogPriority.WARN) {
+                    "Rebuilding ${mangaIds.size} manga_progress rows that no trigger had flagged"
+                }
+                mangaProgressRepository.recalculateAll(mangaIds)
+            }
+            mangaIds.size
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e)
+            0
+        }
+    }
+
+    /**
      * Flags every manga and rebuilds the table from scratch. This is the recovery path for a write
      * that bypassed the triggers, not something a normal write should ever need.
      */

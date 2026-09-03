@@ -2,12 +2,14 @@ package eu.kanade.tachiyomi.data.backup.create.creators
 
 import app.cash.sqldelight.async.coroutines.awaitAsList
 import app.cash.sqldelight.async.coroutines.awaitAsOne
+import app.cash.sqldelight.async.coroutines.awaitAsOneOrNull
 import dev.zacsweers.metro.Inject
 import eu.kanade.tachiyomi.data.backup.create.BackupOptions
 import eu.kanade.tachiyomi.data.backup.models.BackupChapter
 import eu.kanade.tachiyomi.data.backup.models.BackupHistory
 import eu.kanade.tachiyomi.data.backup.models.BackupManga
 import eu.kanade.tachiyomi.data.backup.models.backupChapterMapper
+import eu.kanade.tachiyomi.data.backup.models.backupMangaProgressMapper
 import eu.kanade.tachiyomi.data.backup.models.backupTrackMapper
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import tachiyomi.data.Database
@@ -80,6 +82,14 @@ class MangaBackupCreator(
                     mangaObject.history = history
                 }
             }
+
+            // Under the history option because that is what these two are: the dates reading
+            // started and finished. A backup that leaves history out is one the user asked not to
+            // carry reading dates, and the restore can still derive both from the read flags.
+            mangaObject.progress = database.manga_progressQueries
+                .getProgressFactsByMangaId(manga.id, backupMangaProgressMapper)
+                .awaitAsOneOrNull()
+                ?.takeIf { it.startedAt != null || it.completedAt != null }
         }
 
         return mangaObject
