@@ -5,14 +5,18 @@ import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 import tachiyomi.core.common.preference.Preference
 import tachiyomi.core.common.preference.PreferenceStore
+import tachiyomi.domain.sync.model.SyncWatermark
 import java.net.URI
+import java.util.UUID
 
 /**
- * What the user has decided about syncing reading progress with a server of their own.
+ * What the user has decided about syncing reading progress with a server of their own, plus the
+ * little state a sync has to remember between runs.
  *
- * Nothing reads these beyond the settings screen yet, and that is deliberate: the screen ships on
- * its own, with the switch off, so the naming and the shape of the options settle before there is a
- * protocol and a job depending on them.
+ * Nothing drives a sync yet. The user-facing settings ship ahead of the job so their naming and
+ * defaults settle before a protocol depends on them; the state below ships with the protocol it
+ * belongs to, because a watermark whose meaning is decided later is a watermark that will be read
+ * wrongly once.
  */
 @Inject
 @SingleIn(AppScope::class)
@@ -40,6 +44,67 @@ class SyncPreferences(
     )
 
     val syncOnlyOverWifi: Preference<Boolean> = preferenceStore.getBoolean("sync_only_over_wifi", true)
+
+    /**
+     * Which server the watermark below belongs to, and the two halves of the watermark itself.
+     *
+     * All three are app state rather than settings: they are not answers to a question the user was
+     * asked, they mean nothing on another device, and carrying them into a restored backup would
+     * tell the receiving device it had already sent changes it has never seen.
+     */
+    private val watermarkServerUrl = preferenceStore.getString(
+        Preference.appStateKey("sync_watermark_server_url"),
+        "",
+    )
+
+    private val watermarkSince = preferenceStore.getLong(Preference.appStateKey("sync_watermark_since"), 0L)
+
+    private val watermarkPushedThrough = preferenceStore.getLong(
+        Preference.appStateKey("sync_watermark_pushed_through"),
+        0L,
+    )
+
+    private val deviceId = preferenceStore.getString(Preference.appStateKey("sync_device_id"), "")
+
+    /**
+     * Where the next sync starts from, or [SyncWatermark.NONE] when there is nothing to start from.
+     *
+     * A watermark is a position in one server's log and a claim about what that server has already
+     * been told. Pointed at a different address it is neither, so it is not carried over: the next
+     * run asks for everything and sends everything, which is the only safe reading of "this server
+     * has never heard from me". Comparing the addresses here rather than clearing on every edit
+     * also means a typo corrected back to the original address costs nothing.
+     */
+    fun watermark(): SyncWatermark {
+        if (watermarkServerUrl.get() != serverUrl.get().trim()) return SyncWatermark.NONE
+        return SyncWatermark(
+            since = watermarkSince.get(),
+            pushedThrough = watermarkPushedThrough.get(),
+        )
+    }
+
+    /**
+     * Records a run that finished. Called after the incoming changes are applied and not before, so
+     * a run that dies halfway asks for them again rather than skipping them for good.
+     */
+    fun recordSync(watermark: SyncWatermark) {
+        watermarkSince.set(watermark.since)
+        watermarkPushedThrough.set(watermark.pushedThrough)
+        watermarkServerUrl.set(serverUrl.get().trim())
+    }
+
+    /**
+     * This device's name on the wire, minted the first time it is asked for.
+     *
+     * The server uses it to keep a device's own writes out of what it sends back. It is not a
+     * credential -- the api key is -- and it says nothing about the device beyond "the same one as
+     * last time", which is the whole of what a sync needs to know.
+     */
+    fun deviceId(): String {
+        return deviceId.get().ifEmpty {
+            UUID.randomUUID().toString().also(deviceId::set)
+        }
+    }
 
     companion object {
         const val SYNC_MANUAL = 0

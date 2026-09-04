@@ -55,9 +55,51 @@ Material Symbols like every other icon in the pack, which Valkyrie turns into
 unlike its neighbours: `fonts.google.com`'s metadata endpoint is blocked here,
 and inventing a number is worse than omitting one.
 
-Next is B2 — `SyncMerger` extended to the full rules, the
-`SyncRequest`/`SyncResponse` models and the watermark, all pure and with no
-network in it.
+B2 is in, and still has no network in it: the wire models under
+`app/…/data/sync/models` — `SyncChapter`, `SyncHistory`, `SyncManga`,
+`SyncRequest`, `SyncResponse` — `SyncMerger.mergeManga`, which merges a whole
+entry instead of a row at a time, and the watermark, which is `SyncWatermark`
+under `domain/…/sync/model` plus the state behind `SyncPreferences.watermark()`,
+`recordSync` and `deviceId()`. Five choices worth knowing:
+
+- The wire carries only what a merge decides. The plan proposed sending
+  `BackupManga` as it stands; what goes out instead is `(source, url)`, each
+  chapter's `read`, `last_page_read`, `bookmark` and `version`, its session, and
+  `started_at`/`completed_at`. Titles, covers and genres would put a library
+  catalogue on someone's server for no gain — the other device has the same
+  source — and the counts are that device's own arithmetic over the rest.
+- History is its own message rather than three more fields on `SyncChapter`,
+  which is the shape the database and the backup already have: a chapter can be
+  read with no history row, and a row can be cleared while the chapter stays
+  read. Folding them together would have to invent an answer for both.
+- The bookmark tie-break changed, and it changes the restore with it. It was
+  "the local copy keeps its value when the versions are equal", which never
+  converges: two devices at the same counter that each wrote once — one
+  bookmarking, one turning a page — tie with different answers and keep their
+  own forever. It is now "the bookmark survives the tie", which is symmetric,
+  and which over a whole history of merges reads as "the bookmarks set at the
+  highest version seen, OR'd together" — a lattice element like the rest.
+  Restoring a backup whose bookmark ties now brings that bookmark back;
+  removing it again bumps the counter and wins outright.
+- The watermark is two numbers, not one. The plan's single `since` was compared
+  against the server's log in one direction and against local `last_modified_at`
+  in the other, which is two clocks wearing one name: a device running behind
+  the server would skip every change it made in the interval and never notice.
+  `since` stays the server's, `pushedThrough` is this device's high-water mark
+  of what it has already sent.
+- The watermark is stored against the address it was earned at, so pointing the
+  app at a different server yields `SyncWatermark.NONE` — ask for everything,
+  send everything — while a typo corrected back to the original address costs
+  nothing.
+
+The protocol carries reading progress and nothing else, which is all the plan's
+merge table ever specified. B1's *What to sync* offers categories and tracking
+as well, and they have no message and no merge rule yet: whoever adds them adds
+fields to `SyncRequest` and `SyncResponse`, which is what the unknown-field test
+in `SyncProtocolTest` exists to make safe.
+
+Next is B3 — `SyncApi` on an OkHttp client of its own, the job and its
+notifications, and the *Sync now* row and last-sync timestamp B1 left out.
 
 A3 needed three columns A1 had not planned for — `bookmarked_chapter_count`,
 `latest_upload_at`, `latest_fetch_at`. Without them the view still had to group
@@ -186,14 +228,16 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
   triggers.
 - The merge rules are `SyncMerger`'s and nowhere else's: `read` is an OR,
   `last_page_read` and both history columns are maxima, `bookmark` is
-  last-write-wins on `chapters.version`, and `started_at`/`completed_at` take
-  the earlier of the two, with null meaning "this device does not know" rather
-  than "it did not happen". The restore used to carry its own copy of these
-  inline, and two of them were wrong for a merge: `bookmark` was an OR, so a
-  bookmark removed on one device came back at the next restore, and
-  `last_page_read` took the backup's value rather than the further of the two.
-  Track B's sync is the second client, which is the reason they are a pure
-  function with no database in sight.
+  last-write-wins on `chapters.version` with an exact tie keeping the bookmark,
+  and `started_at`/`completed_at` take the earlier of the two, with null meaning
+  "this device does not know" rather than "it did not happen". The restore used
+  to carry its own copy of these inline, and two of them were wrong for a merge:
+  `bookmark` was an OR, so a bookmark removed on one device came back at the
+  next restore, and `last_page_read` took the backup's value rather than the
+  further of the two. There are two ways in now and still one definition: the
+  restore merges a `Chapter` and a `History`, a sync merges a `SyncManga`, and
+  the first pair is written in terms of the second so a bug in either shows up
+  in both sets of tests.
 - A backup carries `started_at` and `completed_at` and nothing else of the
   table: `BackupMangaProgress` at `@ProtoNumber(113)`, written under the history
   option because that is what those two dates are. The rest of the row is
