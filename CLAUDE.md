@@ -48,9 +48,14 @@ not an omission. Four choices worth knowing:
   A button with no job behind it is worse than no button, so B3 adds both with
   the thing they trigger. `SyncState` is missing for the same reason.
 
-The list entry borrows the `Public` icon: the pack has no cloud-sync glyph, and
-adding one means adding an SVG under `icons/material-symbols` for Valkyrie to
-generate from. Next is B2 — `SyncMerger` extended to the full rules, the
+The list entry has an icon of its own: `cloud_sync.svg` under
+`icons/material-symbols/src/main/valkyrieResources/rounded`, taken from Google's
+Material Symbols like every other icon in the pack, which Valkyrie turns into
+`MaterialSymbols.Rounded.CloudSync` on sync. Its header comment names no version,
+unlike its neighbours: `fonts.google.com`'s metadata endpoint is blocked here,
+and inventing a number is worse than omitting one.
+
+Next is B2 — `SyncMerger` extended to the full rules, the
 `SyncRequest`/`SyncResponse` models and the watermark, all pure and with no
 network in it.
 
