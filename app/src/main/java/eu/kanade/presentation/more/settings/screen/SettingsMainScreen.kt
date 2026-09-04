@@ -40,6 +40,7 @@ import mihon.icons.materialsymbols.rounded.Download
 import mihon.icons.materialsymbols.rounded.Explore
 import mihon.icons.materialsymbols.rounded.Info
 import mihon.icons.materialsymbols.rounded.Palette
+import mihon.icons.materialsymbols.rounded.Public
 import mihon.icons.materialsymbols.rounded.Search
 import mihon.icons.materialsymbols.rounded.Security
 import mihon.icons.materialsymbols.rounded.Storage
@@ -212,6 +213,12 @@ object SettingsMainScreen : Screen() {
             subtitleRes = MR.strings.pref_backup_summary,
             icon = MaterialSymbols.Rounded.Storage,
             screen = SettingsDataScreen,
+        ),
+        Item(
+            titleRes = MR.strings.pref_category_sync,
+            subtitleRes = MR.strings.pref_sync_summary,
+            icon = MaterialSymbols.Rounded.Public,
+            screen = SettingsSyncScreen,
         ),
         Item(
             titleRes = MR.strings.pref_category_security,

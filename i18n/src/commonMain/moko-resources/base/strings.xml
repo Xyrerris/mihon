@@ -281,6 +281,7 @@
     <string name="pref_category_library_update">Global update</string>
     <string name="pref_library_update_interval">Automatic updates</string>
     <string name="update_never">Off</string>
+    <string name="update_1hour">Every hour</string>
     <string name="update_6hour">Every 6 hours</string>
     <string name="update_12hour">Every 12 hours</string>
     <string name="update_24hour">Daily</string>
@@ -618,6 +619,24 @@
     <!-- Sync section -->
     <string name="syncing_library">Syncing library</string>
     <string name="library_sync_complete">Library sync complete</string>
+
+    <string name="pref_category_sync">Device sync</string>
+    <string name="pref_sync_summary">Your own server, what to sync, how often</string>
+    <string name="pref_sync_enabled">Enable sync</string>
+    <string name="pref_sync_enabled_summary">Keep reading progress in step across your devices</string>
+    <string name="pref_sync_group_server">Server</string>
+    <string name="pref_sync_server_url">Server URL</string>
+    <string name="pref_sync_server_url_invalid">Enter an address starting with https://</string>
+    <string name="pref_sync_api_key">API key</string>
+    <string name="pref_sync_api_key_set">Set</string>
+    <string name="pref_sync_api_key_unset">Not set</string>
+    <string name="pref_sync_group_syncing">Syncing</string>
+    <string name="pref_sync_content">What to sync</string>
+    <string name="pref_sync_content_progress">Reading progress</string>
+    <string name="pref_sync_interval">Sync frequency</string>
+    <string name="pref_sync_interval_manual">Manual only</string>
+    <string name="pref_sync_only_over_wifi">Only over Wi-Fi</string>
+    <string name="pref_sync_unimplemented_info">Syncing is not implemented yet. These settings are saved, but nothing is sent anywhere.</string>
 
       <!-- Advanced section -->
     <string name="label_network">Networking</string>

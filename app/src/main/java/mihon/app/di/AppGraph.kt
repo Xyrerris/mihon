@@ -50,6 +50,7 @@ import tachiyomi.domain.manga.interactor.GetFavorites
 import tachiyomi.domain.manga.interactor.ResetViewerFlags
 import tachiyomi.domain.source.service.SourceManager
 import tachiyomi.domain.storage.service.StoragePreferences
+import tachiyomi.domain.sync.service.SyncPreferences
 import tachiyomi.domain.track.interactor.InsertTrack
 
 @DependencyGraph(
@@ -84,6 +85,7 @@ interface AppGraph : ViewModelGraph {
     val sourcePreferences: SourcePreferences
     val trackPreferences: TrackPreferences
     val backupPreferences: BackupPreferences
+    val syncPreferences: SyncPreferences
     val storagePreferences: StoragePreferences
     val privacyPreferences: PrivacyPreferences
     val securityPreferences: SecurityPreferences

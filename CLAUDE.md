@@ -29,10 +29,30 @@ A4 closed the loop between devices. `SyncMerger` is where the merge rules live
 now, for the backup restore and for the sync that will reuse it; the backup
 carries `started_at` and `completed_at` as `BackupManga.progress`;
 `LibraryUpdateJob` reconciles rows no trigger flagged; and `BackupRestorer`
-clears `mangas.is_syncing` on purpose rather than by side effect. Next is B1,
-which is the settings screen and the preferences behind it, and nothing else:
-the plan wants it shippable on its own, with the switch off and nothing behind
-it yet.
+clears `mangas.is_syncing` on purpose rather than by side effect.
+
+B1 is in: `SyncPreferences` under `domain/…/sync/service`, `SettingsSyncScreen`
+listed as *Device sync* between *Data and storage* and *Security and privacy*,
+and the strings for both. Nothing reads the preferences yet — that is the phase,
+not an omission. Four choices worth knowing:
+
+- The screen is *Device sync*, not *Sync*: *Tracking* already advertises
+  "one-way progress sync", and `syncing_library` is upstream's string for a
+  restore run as a sync. The class keeps the plan's name.
+- The API key sits behind `Preference.privateKey`, so a shared `.tachibk` does
+  not carry it, and the screen shows *Set* rather than the key itself.
+- `isValidServerUrl` refuses anything but `https` with a host, and refuses an
+  empty address too: it answers "can a sync run against this", which is the
+  question B3's job asks, not "has the user finished typing".
+- The plan's *Sync now* row and the last-sync timestamp behind it are not there.
+  A button with no job behind it is worse than no button, so B3 adds both with
+  the thing they trigger. `SyncState` is missing for the same reason.
+
+The list entry borrows the `Public` icon: the pack has no cloud-sync glyph, and
+adding one means adding an SVG under `icons/material-symbols` for Valkyrie to
+generate from. Next is B2 — `SyncMerger` extended to the full rules, the
+`SyncRequest`/`SyncResponse` models and the watermark, all pure and with no
+network in it.
 
 A3 needed three columns A1 had not planned for — `bookmarked_chapter_count`,
 `latest_upload_at`, `latest_fetch_at`. Without them the view still had to group
