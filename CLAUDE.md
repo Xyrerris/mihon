@@ -13,8 +13,9 @@ outside the repository, as an artifact:
 
 It is the source of truth for what to build and in which order — read it before
 starting a phase. It is written in Italian and splits the work into track A
-(local persistence, phases A1 to A4) and track B (online sync, B1 to B4), with
-the progress UI left out of both.
+(local persistence, phases A1 to A4), track B (online sync, B1 to B4) and track C
+(the server that sync talks to, C1 to C3), with the progress UI left out of all
+three.
 
 Track A is done. `manga_progress`, its queries and migration `15.sqm` are in
 the tree, and so are the `MangaProgress` model and the `MangaProgressRepository`
@@ -58,6 +59,18 @@ and inventing a number is worse than omitting one.
 Next is B2 — `SyncMerger` extended to the full rules, the
 `SyncRequest`/`SyncResponse` models and the watermark, all pure and with no
 network in it.
+
+Track C is the plan's newest part: the server the client talks to, which stays
+out of this repository — the fork ships a client and a documented protocol,
+nothing else. Two of its decisions bear on code written here. The server keys a
+row by `(account, device, source, url)` and not by `(source, url)`: one row per
+manga loses facts, because a device that overwrites a peer's row before reading
+it leaves that peer with nothing to re-push, its `last_modified_at` having
+already moved. And the wire contract is a `.proto` derived from the backup
+models rather than the Kotlin classes themselves — B4 owes a specification
+somebody else can implement, and field numbers described in prose drift from the
+ones the client actually writes. C1 also produces the test vectors both sides
+check themselves against, which is what keeps them from diverging.
 
 A3 needed three columns A1 had not planned for — `bookmarked_chapter_count`,
 `latest_upload_at`, `latest_fetch_at`. Without them the view still had to group
