@@ -50,25 +50,14 @@ def at_baseline(path):
     ).stdout
 
 
-# The baseline is the revision before the newest migration was added, the same
-# one verify_sqldelight_gradle.sh uses, and HEAD while that migration is still
-# uncommitted.
-NEWEST = max(
-    int(f[:-4]) for f in os.listdir(MIGRATIONS) if f.endswith(".sqm")
-)
-NEWEST_PATH = f"data/src/main/sqldelight/tachiyomi/migrations/{NEWEST}.sqm"
-tracked = subprocess.run(
-    ["git", "-C", ROOT, "ls-files", "--error-unmatch", NEWEST_PATH],
-    capture_output=True, text=True,
-).returncode == 0
-if tracked:
-    added = subprocess.run(
-        ["git", "-C", ROOT, "log", "--diff-filter=A", "--format=%H", "-1", "--", NEWEST_PATH],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    BASELINE = f"{added}^"
-else:
-    BASELINE = "HEAD"
+# The baseline is the revision the newest migration upgrades; see
+# migration_baseline.py, which verify_sqldelight_gradle.sh uses too.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from migration_baseline import baseline, newest_migration
+
+NEWEST = newest_migration()
+BASELINE = baseline()
 
 tables = ""
 for f in ("mangas.sq", "chapters.sq", "history.sq", "excluded_scanlators.sq",

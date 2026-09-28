@@ -13,7 +13,6 @@ class SyncMergerTest {
         read: Boolean = false,
         bookmark: Boolean = false,
         lastPageRead: Long = 0L,
-        version: Long = 0L,
         name: String = "Chapter 1",
     ) = Chapter.create().copy(
         id = id,
@@ -23,7 +22,6 @@ class SyncMergerTest {
         read = read,
         bookmark = bookmark,
         lastPageRead = lastPageRead,
-        version = version,
     )
 
     private fun history(
@@ -54,33 +52,12 @@ class SyncMergerTest {
     }
 
     @Test
-    fun `When the incoming bookmark is newer expect it to win, removal included`() {
-        val local = chapter(bookmark = true, version = 1)
-        val remote = chapter(bookmark = false, version = 2)
+    fun `When either side has bookmarked the chapter expect the bookmark kept`() {
+        val local = chapter(bookmark = false)
+        val remote = chapter(bookmark = true)
 
-        SyncMerger.mergeChapter(local, remote).bookmark shouldBe false
-    }
-
-    @Test
-    fun `When the local bookmark is newer expect the incoming one ignored`() {
-        val local = chapter(bookmark = false, version = 3)
-        val remote = chapter(bookmark = true, version = 2)
-
-        SyncMerger.mergeChapter(local, remote).bookmark shouldBe false
-    }
-
-    @Test
-    fun `When the versions tie expect the local bookmark kept`() {
-        val local = chapter(bookmark = false, version = 2)
-        val remote = chapter(bookmark = true, version = 2)
-
-        SyncMerger.mergeChapter(local, remote).bookmark shouldBe false
-    }
-
-    @Test
-    fun `When merging expect the version to be the higher of the two`() {
-        SyncMerger.mergeChapter(chapter(version = 5), chapter(version = 2)).version shouldBe 5
-        SyncMerger.mergeChapter(chapter(version = 2), chapter(version = 5)).version shouldBe 5
+        SyncMerger.mergeChapter(local, remote).bookmark shouldBe true
+        SyncMerger.mergeChapter(remote, local).bookmark shouldBe true
     }
 
     @Test
@@ -97,8 +74,8 @@ class SyncMergerTest {
 
     @Test
     fun `When the same chapter is merged twice expect the same result`() {
-        val local = chapter(read = true, bookmark = true, lastPageRead = 4, version = 1)
-        val remote = chapter(read = false, bookmark = false, lastPageRead = 9, version = 3)
+        val local = chapter(read = true, bookmark = true, lastPageRead = 4)
+        val remote = chapter(read = false, bookmark = false, lastPageRead = 9)
 
         val once = SyncMerger.mergeChapter(local, remote)
 

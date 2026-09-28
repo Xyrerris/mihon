@@ -139,19 +139,11 @@ gradle_run "$WORK_DIR/generate.log" "$SQ_DIR" generateMainDatabaseInterface --re
 note "ok: every .sq parses and type-checks"
 
 # --- 2. the migrations ----------------------------------------------------
-# The baseline is the revision before the newest migration was added, which is
-# the schema that migration claims to upgrade.
-newest="$(ls "$SQ_DIR"/tachiyomi/migrations/*.sqm | sed 's#.*/##; s#\.sqm$##' | sort -n | tail -1)"
-newest_path="data/src/main/sqldelight/tachiyomi/migrations/$newest.sqm"
-
+# The baseline is the revision the newest migration upgrades, the schema it was
+# written against; migration_baseline.py explains how that is found, merges
+# included.
 if [ -z "$BASELINE" ]; then
-    if git -C "$PROJECT_DIR" ls-files --error-unmatch "$newest_path" >/dev/null 2>&1; then
-        added="$(git -C "$PROJECT_DIR" log --diff-filter=A --format=%H -1 -- "$newest_path")"
-        BASELINE="$added^"
-    else
-        # Still uncommitted, so HEAD is already the schema it upgrades.
-        BASELINE="HEAD"
-    fi
+    BASELINE="$(python3 "$(dirname "$0")/migration_baseline.py")"
 fi
 
 if ! git -C "$PROJECT_DIR" rev-parse --verify -q "$BASELINE^{commit}" >/dev/null; then

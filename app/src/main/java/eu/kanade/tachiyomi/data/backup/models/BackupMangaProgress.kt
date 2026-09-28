@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.data.backup.models
 import eu.kanade.tachiyomi.data.sync.MangaProgressFacts
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.protobuf.ProtoNumber
+import tachiyomi.domain.manga.model.MangaProgress
 
 /**
  * The two manga_progress columns a backup carries. Everything else on the row is derived from the
@@ -22,9 +23,7 @@ data class BackupMangaProgress(
     )
 }
 
-val backupMangaProgressMapper = { startedAt: Long?, completedAt: Long? ->
-    BackupMangaProgress(
-        startedAt = startedAt,
-        completedAt = completedAt,
-    )
-}
+fun MangaProgress.toBackupMangaProgress() = BackupMangaProgress(
+    startedAt = startedAt,
+    completedAt = completedAt,
+)

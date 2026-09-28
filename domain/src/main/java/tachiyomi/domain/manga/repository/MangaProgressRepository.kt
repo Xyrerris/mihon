@@ -19,6 +19,13 @@ interface MangaProgressRepository {
 
     suspend fun recalculateAll(mangaIds: List<Long>)
 
+    /**
+     * Writes [startedAt] and [completedAt] as given and flags the row, so the derived columns are
+     * rebuilt by whoever recalculates next. The caller has already merged them: the rule lives in
+     * SyncMerger, not here.
+     */
+    suspend fun upsertProgressFacts(mangaId: Long, startedAt: Long?, completedAt: Long?)
+
     suspend fun markStale(mangaId: Long)
 
     suspend fun markAllStale()

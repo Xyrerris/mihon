@@ -16,7 +16,7 @@ starting a phase. It is written in Italian and splits the work into track A
 (local persistence, phases A1 to A4) and track B (online sync, B1 to B4), with
 the progress UI left out of both.
 
-Track A is done. `manga_progress`, its queries and migration `15.sqm` are in
+Track A is done. `manga_progress`, its queries and migration `17.sqm` are in
 the tree, and so are the `MangaProgress` model and the `MangaProgressRepository`
 interface in `domain`, the implementation and mapper in `data`, and the
 `GetMangaProgress` and `RecalculateMangaProgress` interactors. `libraryView`
@@ -25,11 +25,10 @@ reads its counts off the table rather than aggregating `chapters`,
 measurement A3 asked for is `.claude/tools/benchmark_library_view.py`: 22x on a
 synthetic library of 1200 manga.
 
-A4 closed the loop between devices. `SyncMerger` is where the merge rules live
-now, for the backup restore and for the sync that will reuse it; the backup
-carries `started_at` and `completed_at` as `BackupManga.progress`;
-`LibraryUpdateJob` reconciles rows no trigger flagged; and `BackupRestorer`
-clears `mangas.is_syncing` on purpose rather than by side effect.
+A4 closed the loop between devices. `SyncMerger` holds the merge rules for the
+sync to reuse; the backup carries `started_at` and `completed_at` as
+`BackupManga.progress`; and `LibraryUpdateJob` reconciles rows no trigger
+flagged.
 
 B1 is in: `SyncPreferences` under `domain/…/sync/service`, `SettingsSyncScreen`
 listed as *Device sync* between *Data and storage* and *Security and privacy*,
@@ -55,9 +54,35 @@ Material Symbols like every other icon in the pack, which Valkyrie turns into
 unlike its neighbours: `fonts.google.com`'s metadata endpoint is blocked here,
 and inventing a number is worse than omitting one.
 
-Next is B2 — `SyncMerger` extended to the full rules, the
-`SyncRequest`/`SyncResponse` models and the watermark, all pure and with no
-network in it.
+Upstream was merged in on 2026-09-28, and two of its changes reshaped track A:
+
+- *Remove unused sync scaffold* dropped `version`, `is_syncing` and
+  `last_modified_at` from `mangas` and `chapters`, their triggers, and the
+  matching backup fields, which upstream now calls "artifacts of the abandoned
+  sync attempt" and keeps reserved (`BackupChapter` 11 and 12, `BackupManga`
+  106 and 109 — never reuse them). The progress triggers were guarded on
+  `mangas.is_syncing` and the bookmark rule compared `chapters.version`; see the
+  invariants below for what replaced each.
+- Upstream took migrations `15.sqm` and `16.sqm` — the drop above, and
+  `favorite`, `date_added` and `favorite_modified_at` folded into
+  `favorite_at`. The fork's migration became `17.sqm`, written against the
+  schema those two leave. The old fork `15.sqm` never reached an installation,
+  so no install is left on a schema this numbering skips; a development build
+  that did carry it has to be reinstalled or have its data cleared.
+- The restore moved into `RestoreRepositoryImpl`, in `data`, all of it in one
+  transaction per batch. The fork leaves that file exactly as upstream ships it
+  and hooks in from `MangaRestorer`, in `app`, through the per-entry callback
+  `restoreManga` already takes.
+
+B2 and the plan's track C are both written and neither is merged:
+`claude/procedi-con-b2-4mkmjg` and `claude/sql-server-coolify-setup-m22x35`,
+branched before the upstream merge. B2 needs adapting on the way in, not only
+merging: its bookmark rule is last-write-wins on a per-chapter `version` that no
+longer exists anywhere, and its `SyncManga.lastModifiedAt` is documented in
+seconds. The wire format can keep `SyncChapter.version`, but the number has to
+come from a counter the fork owns — a trigger-maintained column on a fork table,
+never one re-added to `chapters` — and that counter is B3's to build, with the
+push that reads it.
 
 A3 needed three columns A1 had not planned for — `bookmarked_chapter_count`,
 `latest_upload_at`, `latest_fetch_at`. Without them the view still had to group
@@ -113,15 +138,23 @@ scripts are not a substitute for the compiler.
   applies the migration to the previous revision's schema and diffs the result.
 - No `.db` schema files are checked in, so the baseline for that diff is
   generated from git. SQLDelight names a schema file after the version it is
-  already at, so fourteen migrations produce `15.db`.
+  already at, so sixteen migrations produce `17.db`.
+- The baseline is the revision the newest migration upgrades, and
+  `.claude/tools/migration_baseline.py` is what finds it for all three tools:
+  the parent of the commit that added migration N which already had N-1. For a
+  migration added by a merge that is not the first parent — `17.sqm` arrived in
+  the merge that brought upstream's 15 and 16, and it upgrades upstream's side.
 - `verifyMigrations` stays off in `data/build.gradle.kts`. Migrations 1 to 14
   target the legacy Tachiyomi schema, so type-checking them against the current
   one reports well over a hundred failures at any revision, upstream included.
   The `.sq` files are type-checked either way.
-- `15.sqm` has not reached any installation yet, so a correction to the table
+- `17.sqm` has not reached any installation yet, so a correction to the table
   it creates still belongs in that file, edited together with the `.sq`. Once a
-  build carries it, the same correction costs a `16.sqm` doing `DROP` and
+  build carries it, the same correction costs an `18.sqm` doing `DROP` and
   `CREATE`.
+- Upstream adds migrations too. When a merge brings one numbered like an
+  unreleased fork migration, the fork's moves past it, as `15.sqm` became
+  `17.sqm`; upstream's numbering is the one real installations already have.
 - `verify_sqldelight.py` builds its database from the migration, not from
   `manga_progress.sq`: it is the `.sqm` triggers that its checks exercise. The
   two files are held identical by `verify_migration_schema.py` and by the
@@ -138,22 +171,25 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
 
 - The triggers only flag a row `is_stale`; they never recompute. Recomputation
   lives in `recalculateForManga`, so "progress" is defined in exactly one
-  place. Each trigger's `WHEN` guard reads `is_syncing` through a subquery that
-  yields `NULL` once the parent row is gone, which also makes cascading deletes
-  a no-op.
+  place. Each trigger's `WHEN` guard checks only that the parent manga still
+  exists, which makes cascading deletes a no-op instead of a foreign-key
+  failure. The guards used to read `mangas.is_syncing` so that a restore would
+  not flag what it wrote; with that column gone the restore flags like any other
+  write, which costs one primary-key upsert per write and nothing more.
 - `started_at` and `completed_at` are the only columns not derivable from
   `chapters` and `history`. Both are monotonic: recalculation only moves them
   earlier, and `completed_at` is cleared when a new chapter drops the manga
   back below 100%.
-- Timestamps are epoch milliseconds, matching `history.last_read`, except
-  `last_modified_at`, which is in seconds to match the identically named
-  columns on `mangas` and `chapters`.
+- Timestamps are epoch milliseconds, `last_modified_at` included, matching
+  `history.last_read`. It used to be in seconds to match the identically named
+  columns on `mangas` and `chapters`, which no longer exist.
 - The chapter trigger lists every column a stored value depends on: `read`,
   `bookmark`, `last_page_read`, `manga_id`, `scanlator`, `date_upload` and
   `date_fetch`. SQLite fires an `UPDATE OF` trigger on the columns a statement
   names in its `SET` clause, not on the ones whose value changes, so today's
-  single `UPDATE` in `chapters.sq` fires it whatever it writes; the list is what
-  keeps a narrower statement from slipping past. Adding a column the table
+  general `UPDATE` in `chapters.sq` fires it whatever it writes; the list is
+  what keeps a narrower statement, such as the restore's `updateFromBackup`,
+  from slipping past. Adding a column the table
   stores means adding it here too.
 - `bookmarked_chapter_count`, `latest_upload_at` and `latest_fetch_at` are the
   three columns that are not progress. They are what `libraryView` needs beyond
@@ -165,39 +201,40 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
   collects the flagged ids for the life of the process and rebuilds them,
   conflated so a burst costs one pass. It is started from `App.onCreate`, next
   to `widgetManager.init(scope)`.
-- A backup restore writes chapters with `mangas.is_syncing` set, which
-  suppresses the triggers, so `BackupRestorer` calls
-  `RecalculateMangaProgress.awaitAll` when it finishes, and calls
-  `mangasQueries.resetIsSyncing` just before it. The flag was already being
-  cleared per manga, but only by accident: the fetch-interval update that ends
-  each entry's restore happens to write `is_syncing = 0`. Every progress trigger
-  is guarded on that column, so a manga left flagged is a manga whose progress
-  silently stops being maintained — too much to hang on a side effect. The
-  explicit reset matches only rows still flagged, and the one trigger it fires
-  on those, `update_last_modified_at_mangas`, moves a timestamp the restore has
-  already moved.
-- `recursive_triggers` stays at SQLite's default, off: `AppBindings.kt`
-  configures only `isForeignKeyConstraintsEnabled`. It has to stay off, and not
-  because of this table — upstream's `update_last_modified_at_chapters` writes
-  to `chapters` from an `AFTER UPDATE ON chapters` trigger, so turning it on
-  makes an ordinary page read fail with "too many levels of trigger recursion",
-  with `manga_progress` present or absent. The staleness triggers add no
-  recursion of their own: they write only to `manga_progress`, which has no
-  triggers.
-- The merge rules are `SyncMerger`'s and nowhere else's: `read` is an OR,
-  `last_page_read` and both history columns are maxima, `bookmark` is
-  last-write-wins on `chapters.version`, and `started_at`/`completed_at` take
-  the earlier of the two, with null meaning "this device does not know" rather
-  than "it did not happen". The restore used to carry its own copy of these
-  inline, and two of them were wrong for a merge: `bookmark` was an OR, so a
-  bookmark removed on one device came back at the next restore, and
-  `last_page_read` took the backup's value rather than the further of the two.
-  Track B's sync is the second client, which is the reason they are a pure
-  function with no database in sight.
+- A backup restore goes through the triggers like any other write, so what it
+  touched is flagged, and `BackupRestorer` calls
+  `RecalculateMangaProgress.awaitStale` when it finishes so the library shows
+  the restored counts by the time the restore reports itself done. It used to
+  need `awaitAll` and an explicit `is_syncing` reset, because the restore
+  suppressed the triggers; neither is left to do.
+- `recursive_triggers` stays at SQLite's default, off: `DatabaseBindings.kt`
+  configures only `isForeignKeyConstraintsEnabled`. Nothing here depends on it
+  either way — the staleness triggers write only to `manga_progress`, which has
+  no triggers — but it used to matter: upstream's
+  `update_last_modified_at_chapters` wrote to `chapters` from a trigger on
+  `chapters`, and turning it on made a page read fail. That trigger went with
+  the sync scaffold.
+- The merge rules are written twice now, and that is a choice. `SyncMerger`
+  has them for the sync: `read` and `bookmark` are ORs, `last_page_read` and
+  both history columns are maxima, and `started_at`/`completed_at` take the
+  earlier of the two, with null meaning "this device does not know" rather than
+  "it did not happen". Upstream's `RestoreRepositoryImpl` has the same rules
+  for chapters and history, inline — it adopted the maximum on
+  `last_page_read` the fork had argued for. Routing the restore through
+  `SyncMerger` again would mean editing a file upstream rewrites often, from a
+  module (`data`) that cannot see `app`; so the restore calls `SyncMerger` only
+  for the two progress dates, and an upstream merge that touches
+  `restoreChapters` or `restoreHistory` is the moment to compare the two again.
+  `bookmark` being an OR is a regression the fork accepts for now: a bookmark
+  removed on one device comes back at the next merge, because the per-chapter
+  counter that ordered them was upstream's and is gone. The sync gets it back
+  with a counter of its own, in B3.
 - A backup carries `started_at` and `completed_at` and nothing else of the
   table: `BackupMangaProgress` at `@ProtoNumber(113)`, written under the history
   option because that is what those two dates are. The rest of the row is
-  derived, so the `awaitAll` at the end of the restore rebuilds it. A backup
+  derived, so the `awaitStale` at the end of the restore rebuilds it. The two
+  dates are merged inside the restore's own transaction, from the callback
+  `restoreManga` runs once an entry's chapters and history are in place. A backup
   written before the field existed decodes with `progress = null` and merges as
   a no-op, which `BackupMangaProgressTest` pins down against a message that
   genuinely lacks the field.
@@ -207,15 +244,24 @@ Keep these when extending the table, and read `manga_progress.sq` for the rest:
   `LibraryUpdateJob` rebuilds whatever it names. It is the one query that still
   pays the aggregate the table exists to avoid, which is why it runs once per
   library update and not on the library flow.
-- `last_modified_at` and `version` exist but nothing writes them yet; they are
-  the sync convention, and track B is their first client. When something does
-  maintain them, bump them only when `started_at` or `completed_at` change —
-  the facts a sync actually carries. Bumping them on every recalculation would
-  mark every row modified on every device and defeat the `last_modified_at >
-  since` delta the push is built on.
-- Progress deliberately does not live on `mangas`: that table's `AFTER UPDATE`
-  trigger would bump `last_modified_at` on every page read and disturb the
-  version counter backup restore uses to resolve conflicts.
+- `last_modified_at` and `version` exist but nothing writes them yet; track B
+  is their first client. They are the only sync bookkeeping left in the
+  schema, since upstream dropped the same pair from `mangas` and `chapters`, so
+  what they have to mean changes: with no `chapters.last_modified_at` to select
+  a delta on, this is the column that says which manga a push must carry, and
+  it has to move when a chapter's `read`, `bookmark` or `last_page_read` or a
+  history row changes, not only when `started_at` or `completed_at` do. It must
+  still not move on a recalculation that changes nothing a sync carries, or
+  every device marks every row modified on every pass. A push per manga, not
+  per chapter, is also what the server's one row per `(account, device, source,
+  url)` needs: a row overwritten with a partial chapter list would lose the
+  rest.
+- Sync bookkeeping lives on tables the fork owns, never on upstream's. Progress
+  was kept off `mangas` for a reason that no longer applies — its `AFTER
+  UPDATE` trigger would have bumped `last_modified_at` on every page read — and
+  a better one replaced it: upstream has just shown it will remove columns it
+  does not use, and a fork column on an upstream table is a conflict at every
+  merge that touches it.
 
 ## Branches
 

@@ -3,9 +3,6 @@ package tachiyomi.data.manga
 import tachiyomi.domain.manga.model.MangaProgress
 
 object MangaProgressMapper {
-    // isSyncing is storage bookkeeping for the restore and sync paths, the same as on mangas and
-    // chapters, so it does not reach the domain model.
-    @Suppress("UNUSED_PARAMETER")
     fun mapMangaProgress(
         mangaId: Long,
         lastReadChapterId: Long?,
@@ -24,7 +21,6 @@ object MangaProgressMapper {
         isStale: Boolean,
         lastModifiedAt: Long,
         version: Long,
-        isSyncing: Long,
     ): MangaProgress = MangaProgress(
         mangaId = mangaId,
         lastReadChapterId = lastReadChapterId,

@@ -1,0 +1,237 @@
+import kotlin.Boolean;
+
+-- Materialize per-manga reading progress. See manga_progress.sq for the column
+-- semantics; this file must keep the table, indexes and triggers identical to it.
+--
+-- It runs after upstream's 15 and 16, so it is written against the schema they
+-- leave: no version, is_syncing or last_modified_at on mangas and chapters, and
+-- favorite folded into favorite_at.
+
+CREATE TABLE manga_progress(
+    manga_id INTEGER NOT NULL PRIMARY KEY,
+    last_read_chapter_id INTEGER,
+    last_read_chapter_number REAL,
+    last_read_page INTEGER NOT NULL DEFAULT 0,
+    read_chapter_count INTEGER NOT NULL DEFAULT 0,
+    total_chapter_count INTEGER NOT NULL DEFAULT 0,
+    bookmarked_chapter_count INTEGER NOT NULL DEFAULT 0,
+    progress_percent REAL NOT NULL DEFAULT 0.0,
+    started_at INTEGER,
+    completed_at INTEGER,
+    last_read_at INTEGER,
+    latest_upload_at INTEGER NOT NULL DEFAULT 0,
+    latest_fetch_at INTEGER NOT NULL DEFAULT 0,
+    total_read_duration INTEGER NOT NULL DEFAULT 0,
+    is_stale INTEGER AS Boolean NOT NULL DEFAULT 0,
+    last_modified_at INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(manga_id) REFERENCES mangas (_id)
+    ON DELETE CASCADE,
+    FOREIGN KEY(last_read_chapter_id) REFERENCES chapters (_id)
+    ON DELETE SET NULL
+);
+
+CREATE INDEX manga_progress_percent_index ON manga_progress(progress_percent);
+CREATE INDEX manga_progress_last_read_at_index ON manga_progress(last_read_at);
+CREATE INDEX manga_progress_stale_index ON manga_progress(is_stale) WHERE is_stale = 1;
+
+-- Inert until something maintains last_modified_at; see manga_progress.sq.
+CREATE INDEX manga_progress_modified_index ON manga_progress(last_modified_at);
+
+-- Backfill every existing manga in one pass, using the same definition as
+-- recalculateForManga. Doing it set-based keeps the upgrade to a single
+-- statement instead of one round trip per manga.
+INSERT INTO manga_progress(
+    manga_id, last_read_chapter_id, last_read_chapter_number, last_read_page,
+    read_chapter_count, total_chapter_count, bookmarked_chapter_count,
+    progress_percent, started_at, completed_at, last_read_at, latest_upload_at,
+    latest_fetch_at, total_read_duration, is_stale
+)
+SELECT
+    M._id,
+    R.chapter_id,
+    R.chapter_number,
+    coalesce(R.last_page_read, 0),
+    coalesce(A.read_count, 0),
+    coalesce(A.total, 0),
+    coalesce(A.bookmark_count, 0),
+    CASE WHEN coalesce(A.total, 0) = 0
+         THEN 0.0
+         ELSE (A.read_count * 1.0) / A.total END,
+    CASE WHEN coalesce(A.read_count, 0) > 0
+         THEN coalesce(A.first_read_at, strftime('%s', 'now') * 1000) END,
+    CASE WHEN coalesce(A.total, 0) > 0 AND A.read_count = A.total
+         THEN coalesce(A.last_read_at, strftime('%s', 'now') * 1000) END,
+    A.last_read_at,
+    coalesce(A.latest_upload, 0),
+    coalesce(A.latest_fetch, 0),
+    coalesce(A.duration, 0),
+    0
+FROM mangas M
+LEFT JOIN (
+    SELECT
+        C.manga_id,
+        count(*) AS total,
+        sum(C.read) AS read_count,
+        max(CASE WHEN H.last_read > 0 THEN H.last_read END) AS last_read_at,
+        min(CASE WHEN H.last_read > 0 THEN H.last_read END) AS first_read_at,
+        sum(H.time_read) AS duration,
+        sum(C.bookmark) AS bookmark_count,
+        max(C.date_upload) AS latest_upload,
+        max(C.date_fetch) AS latest_fetch
+    FROM chapters C
+    LEFT JOIN excluded_scanlators ES
+    ON C.manga_id = ES.manga_id
+    AND C.scanlator = ES.scanlator
+    LEFT JOIN history H
+    ON C._id = H.chapter_id
+    WHERE ES.scanlator IS NULL
+    GROUP BY C.manga_id
+) AS A
+ON A.manga_id = M._id
+LEFT JOIN (
+    SELECT manga_id, chapter_id, chapter_number, last_page_read
+    FROM (
+        SELECT
+            C.manga_id,
+            C._id AS chapter_id,
+            C.chapter_number,
+            C.last_page_read,
+            row_number() OVER (PARTITION BY C.manga_id ORDER BY H.last_read DESC) AS rn
+        FROM chapters C
+        JOIN history H
+        ON C._id = H.chapter_id
+        LEFT JOIN excluded_scanlators ES
+        ON C.manga_id = ES.manga_id
+        AND C.scanlator = ES.scanlator
+        WHERE ES.scanlator IS NULL
+        AND H.last_read > 0
+    )
+    WHERE rn = 1
+) AS R
+ON R.manga_id = M._id;
+
+-- Triggers are created after the backfill so the insert above does not fire them.
+
+CREATE TRIGGER mark_progress_stale_after_chapter_insert
+AFTER INSERT ON chapters
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = new.manga_id)
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (new.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_chapter_update
+AFTER UPDATE OF read, bookmark, last_page_read, manga_id, scanlator,
+date_upload, date_fetch ON chapters
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = new.manga_id)
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (new.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+
+    INSERT INTO manga_progress(manga_id, is_stale)
+    SELECT old.manga_id, 1
+    WHERE old.manga_id != new.manga_id
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_chapter_delete
+AFTER DELETE ON chapters
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = old.manga_id)
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (old.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_history_insert
+AFTER INSERT ON history
+WHEN EXISTS (
+    SELECT 1
+    FROM chapters C JOIN mangas M ON C.manga_id = M._id
+    WHERE C._id = new.chapter_id
+)
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    SELECT C.manga_id, 1
+    FROM chapters C
+    WHERE C._id = new.chapter_id
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_history_update
+AFTER UPDATE ON history
+WHEN EXISTS (
+    SELECT 1
+    FROM chapters C JOIN mangas M ON C.manga_id = M._id
+    WHERE C._id = new.chapter_id
+)
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    SELECT C.manga_id, 1
+    FROM chapters C
+    WHERE C._id = new.chapter_id
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_history_delete
+AFTER DELETE ON history
+WHEN EXISTS (
+    SELECT 1
+    FROM chapters C JOIN mangas M ON C.manga_id = M._id
+    WHERE C._id = old.chapter_id
+)
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    SELECT C.manga_id, 1
+    FROM chapters C
+    WHERE C._id = old.chapter_id
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_excluded_scanlator_insert
+AFTER INSERT ON excluded_scanlators
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = new.manga_id)
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (new.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+CREATE TRIGGER mark_progress_stale_after_excluded_scanlator_delete
+AFTER DELETE ON excluded_scanlators
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = old.manga_id)
+BEGIN
+    INSERT INTO manga_progress(manga_id, is_stale)
+    VALUES (old.manga_id, 1)
+    ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
+END;
+
+-- libraryView now reads its counts off the table created above, so an existing
+-- installation needs the new definition; SQLite stores a view's text verbatim
+-- and never revisits it. This comes last, after the backfill has filled in what
+-- the view is about to read.
+DROP VIEW IF EXISTS libraryView;
+
+CREATE VIEW libraryView AS
+SELECT
+    M.*,
+    coalesce(P.total_chapter_count, 0) AS totalCount,
+    coalesce(P.read_chapter_count, 0) AS readCount,
+    coalesce(P.latest_upload_at, 0) AS latestUpload,
+    coalesce(P.latest_fetch_at, 0) AS chapterFetchedAt,
+    coalesce(P.last_read_at, 0) AS lastRead,
+    coalesce(P.bookmarked_chapter_count, 0) AS bookmarkCount,
+    coalesce(MC.categories, '0') AS categories
+FROM mangas M
+LEFT JOIN manga_progress P
+ON P.manga_id = M._id
+LEFT JOIN (
+    SELECT manga_id, group_concat(category_id) AS categories
+    FROM mangas_categories
+    GROUP BY manga_id
+) AS MC
+ON MC.manga_id = M._id
+WHERE M.favorite_at IS NOT NULL;

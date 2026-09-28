@@ -15,10 +15,13 @@ import kotlin.Boolean;
 -- facts about the chapter list rather than about the reader, so a sync has no
 -- reason to carry them.
 --
--- Timestamps: started_at, completed_at, last_read_at, latest_upload_at and
--- latest_fetch_at are epoch milliseconds, matching history.last_read,
--- chapters.date_upload and the domain models. last_modified_at is epoch
--- seconds, matching the identically named columns on mangas and chapters.
+-- Timestamps are epoch milliseconds throughout, last_modified_at included,
+-- matching history.last_read, chapters.date_upload and the domain models.
+--
+-- last_modified_at and version are this table's own sync bookkeeping. Upstream
+-- dropped the same pair from mangas and chapters as the scaffolding of a sync
+-- it abandoned, which leaves this table as the one place the fork keeps them:
+-- a fork-owned table is also one an upstream merge never touches.
 CREATE TABLE manga_progress(
     manga_id INTEGER NOT NULL PRIMARY KEY,
     last_read_chapter_id INTEGER,
@@ -37,7 +40,6 @@ CREATE TABLE manga_progress(
     is_stale INTEGER AS Boolean NOT NULL DEFAULT 0,
     last_modified_at INTEGER NOT NULL DEFAULT 0,
     version INTEGER NOT NULL DEFAULT 0,
-    is_syncing INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(manga_id) REFERENCES mangas (_id)
     ON DELETE CASCADE,
     FOREIGN KEY(last_read_chapter_id) REFERENCES chapters (_id)
@@ -61,13 +63,19 @@ CREATE INDEX manga_progress_modified_index ON manga_progress(last_modified_at);
 -- path can leave the table silently out of date. Recomputation goes through
 -- recalculateForManga, which is the single definition of "progress".
 --
--- Each WHEN guard reads is_syncing through a subquery that yields NULL once the
--- parent row is gone, so cascading deletes do not attempt to insert a row for a
--- manga that no longer exists.
+-- Each WHEN guard checks that the parent manga still exists, so cascading
+-- deletes do not attempt to insert a row for a manga that no longer exists: the
+-- foreign key would refuse it and fail the delete.
+--
+-- There is deliberately no other condition. The guards used to read
+-- mangas.is_syncing, so that a backup restore would not flag every row it
+-- touched; upstream removed that column, and flagging is one upsert on a
+-- primary key, which is cheap enough that a restore can pay it per write. It
+-- is recomputation that is expensive, and the triggers never do that.
 
 CREATE TRIGGER mark_progress_stale_after_chapter_insert
 AFTER INSERT ON chapters
-WHEN (SELECT is_syncing FROM mangas WHERE _id = new.manga_id) = 0
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = new.manga_id)
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)
     VALUES (new.manga_id, 1)
@@ -95,7 +103,7 @@ END;
 CREATE TRIGGER mark_progress_stale_after_chapter_update
 AFTER UPDATE OF read, bookmark, last_page_read, manga_id, scanlator,
 date_upload, date_fetch ON chapters
-WHEN (SELECT is_syncing FROM mangas WHERE _id = new.manga_id) = 0
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = new.manga_id)
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)
     VALUES (new.manga_id, 1)
@@ -109,7 +117,7 @@ END;
 
 CREATE TRIGGER mark_progress_stale_after_chapter_delete
 AFTER DELETE ON chapters
-WHEN (SELECT is_syncing FROM mangas WHERE _id = old.manga_id) = 0
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = old.manga_id)
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)
     VALUES (old.manga_id, 1)
@@ -118,11 +126,11 @@ END;
 
 CREATE TRIGGER mark_progress_stale_after_history_insert
 AFTER INSERT ON history
-WHEN (
-    SELECT M.is_syncing
+WHEN EXISTS (
+    SELECT 1
     FROM chapters C JOIN mangas M ON C.manga_id = M._id
     WHERE C._id = new.chapter_id
-) = 0
+)
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)
     SELECT C.manga_id, 1
@@ -133,11 +141,11 @@ END;
 
 CREATE TRIGGER mark_progress_stale_after_history_update
 AFTER UPDATE ON history
-WHEN (
-    SELECT M.is_syncing
+WHEN EXISTS (
+    SELECT 1
     FROM chapters C JOIN mangas M ON C.manga_id = M._id
     WHERE C._id = new.chapter_id
-) = 0
+)
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)
     SELECT C.manga_id, 1
@@ -148,11 +156,11 @@ END;
 
 CREATE TRIGGER mark_progress_stale_after_history_delete
 AFTER DELETE ON history
-WHEN (
-    SELECT M.is_syncing
+WHEN EXISTS (
+    SELECT 1
     FROM chapters C JOIN mangas M ON C.manga_id = M._id
     WHERE C._id = old.chapter_id
-) = 0
+)
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)
     SELECT C.manga_id, 1
@@ -163,7 +171,7 @@ END;
 
 CREATE TRIGGER mark_progress_stale_after_excluded_scanlator_insert
 AFTER INSERT ON excluded_scanlators
-WHEN (SELECT is_syncing FROM mangas WHERE _id = new.manga_id) = 0
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = new.manga_id)
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)
     VALUES (new.manga_id, 1)
@@ -172,7 +180,7 @@ END;
 
 CREATE TRIGGER mark_progress_stale_after_excluded_scanlator_delete
 AFTER DELETE ON excluded_scanlators
-WHEN (SELECT is_syncing FROM mangas WHERE _id = old.manga_id) = 0
+WHEN EXISTS (SELECT 1 FROM mangas WHERE _id = old.manga_id)
 BEGIN
     INSERT INTO manga_progress(manga_id, is_stale)
     VALUES (old.manga_id, 1)
@@ -278,15 +286,6 @@ SELECT *
 FROM manga_progress
 WHERE manga_id = :mangaId;
 
--- started_at and completed_at on their own: the two columns a merge has to
--- carry, because they are the only ones a device cannot derive from the
--- chapters and history it holds. Everything else on the row is recomputed by
--- recalculateForManga once the merge is in.
-getProgressFactsByMangaId:
-SELECT started_at, completed_at
-FROM manga_progress
-WHERE manga_id = :mangaId;
-
 -- Writes the merged facts back. The caller has already applied the merge rule,
 -- so this sets what it is given rather than taking a minimum of its own: the
 -- rule lives in SyncMerger, in one place, for the restore and for the sync that
@@ -360,8 +359,3 @@ SELECT _id, 1
 FROM mangas
 WHERE 1 = 1
 ON CONFLICT(manga_id) DO UPDATE SET is_stale = 1;
-
-resetIsSyncing:
-UPDATE manga_progress
-SET is_syncing = 0
-WHERE is_syncing = 1;

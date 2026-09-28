@@ -68,17 +68,11 @@ def git(*argv):
 if BASELINE is None:
     # The revision the newest migration upgrades, the same baseline the two
     # verification scripts use, which is where the previous view is declared.
-    newest = max(int(f[:-4]) for f in os.listdir(MIGRATIONS) if f.endswith(".sqm"))
-    path = f"data/src/main/sqldelight/tachiyomi/migrations/{newest}.sqm"
-    tracked = subprocess.run(
-        ["git", "-C", ROOT, "ls-files", "--error-unmatch", path],
-        capture_output=True, text=True,
-    ).returncode == 0
-    if tracked:
-        BASELINE = git("log", "--diff-filter=A", "--format=%H", "-1", "--", path).strip() + "^"
-    else:
-        BASELINE = "HEAD"
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from migration_baseline import baseline
 
+    BASELINE = baseline()
 
 def view_body(sql):
     """The SELECT the view wraps, with the leading comments and CREATE dropped."""
@@ -112,12 +106,12 @@ chapter_id = 0
 for mid in range(1, MANGA_COUNT + 1):
     # A tenth are not in the library. The view filters them out and the aggregate
     # it used to join did not, which is part of what is being measured.
-    favorite = 0 if mid % 10 == 0 else 1
+    favorite_at = None if mid % 10 == 0 else now_ms
     db.execute(
-        "INSERT INTO mangas(_id, source, url, title, status, favorite, initialized,"
-        " viewer, chapter_flags, cover_last_modified, date_added)"
-        " VALUES (?, 1, ?, ?, 0, ?, 1, 0, 0, 0, ?)",
-        (mid, f"/manga/{mid}", f"Manga {mid}", favorite, now_ms),
+        "INSERT INTO mangas(_id, source, url, title, status, favorite_at, initialized,"
+        " viewer, chapter_flags, cover_last_modified)"
+        " VALUES (?, 1, ?, ?, 0, ?, 1, 0, 0, 0)",
+        (mid, f"/manga/{mid}", f"Manga {mid}", favorite_at),
     )
     db.execute(
         "INSERT INTO mangas_categories(manga_id, category_id) VALUES (?, ?)",

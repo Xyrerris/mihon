@@ -97,10 +97,14 @@ real compiler at the real source directory, reading the SQLDelight version,
 dialect and package name out of the build files rather than repeating them. It
 runs the parser and type checker over every `.sq` — the same work as
 `:data:generateDebugDatabaseInterface` — and then verifies the migrations: it
-generates the schema of the revision before the newest migration was added,
-applies what came after it and diffs the result against the schema the `.sq`
-files declare. This project checks no `.db` schema files in, which is why the
+generates the schema of the revision the newest migration upgrades, applies
+what came after it and diffs the result against the schema the `.sq` files
+declare. This project checks no `.db` schema files in, which is why the
 baseline is generated from git instead of read from the tree.
+`.claude/tools/migration_baseline.py` finds that revision for all three tools:
+the parent of the commit that added the newest migration which already had the
+one before it — the first parent for an ordinary commit, but not necessarily for
+a merge that brings upstream migrations in alongside a fork one.
 
 The Python scripts exercise the SQLite *engine* instead, so they cover what the
 compiler cannot: that the triggers fire, that the backfill produces the numbers

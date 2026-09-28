@@ -1,4 +1,4 @@
-"""Exercise the manga_progress schema, migration 15 backfill, staleness triggers,
+"""Exercise the manga_progress schema, the migration's backfill, staleness triggers,
 the merge facts and the divergence check against a real SQLite engine, using the
 project's own DDL as the starting point."""
 import os
@@ -57,10 +57,10 @@ DAY = 86_400_000
 
 def add_manga(mid, title):
     db.execute(
-        "INSERT INTO mangas(_id, source, url, title, status, favorite, initialized,"
-        " viewer, chapter_flags, cover_last_modified, date_added)"
-        " VALUES (?, 1, ?, ?, 0, 1, 1, 0, 0, 0, 0)",
-        (mid, f"/m/{mid}", title),
+        "INSERT INTO mangas(_id, source, url, title, status, favorite_at, initialized,"
+        " viewer, chapter_flags, cover_last_modified)"
+        " VALUES (?, 1, ?, ?, 0, ?, 1, 0, 0, 0)",
+        (mid, f"/m/{mid}", title, NOW_MS),
     )
 
 
@@ -122,10 +122,14 @@ add_history(601, 0, 250)
 
 db.commit()
 
-# --- apply migration 15 ---------------------------------------------------
-db.executescript(clean(open(f"{MIG}/15.sqm").read()))
+# --- apply the migration that creates manga_progress ---------------------
+# The newest one, which is what an existing install runs last. The .sq files
+# above are the schema it upgrades: upstream's migrations before it have
+# already been folded into them.
+NEWEST = max(int(f[:-4]) for f in os.listdir(MIG) if f.endswith(".sqm"))
+db.executescript(clean(open(f"{MIG}/{NEWEST}.sqm").read()))
 db.commit()
-print("migration 15 applied\n")
+print(f"migration {NEWEST} applied\n")
 
 failures = []
 
@@ -237,12 +241,16 @@ db.execute("UPDATE manga_progress SET is_stale = 0")
 db.execute("UPDATE chapters SET date_upload = ? WHERE _id = 402", (NOW_MS,))
 check("date_upload-only update marks stale", stale(4), 1)
 
-# is_syncing guard: bulk restore must not thrash the table
+# the restore's own statements: it has no way to suppress the triggers any
+# more, and relies on them to flag what it wrote
 db.execute("UPDATE manga_progress SET is_stale = 0")
-db.execute("UPDATE mangas SET is_syncing = 1 WHERE _id = 2")
-db.execute("UPDATE chapters SET read = 0 WHERE _id = 201")
-check("is_syncing suppresses the trigger", stale(2), 0)
-db.execute("UPDATE mangas SET is_syncing = 0 WHERE _id = 2")
+RESTORE_CHAPTER = (
+    named_query(f"{SQ}/chapters.sq", "updateFromBackup")
+    .replace(":read", "?").replace(":bookmark", "?").replace(":lastPageRead", "?")
+    .replace(":memo", "?").replace(":chapterId", "?")
+)
+db.execute(RESTORE_CHAPTER, (0, 0, 3, "{}", 201))
+check("the restore's chapter update marks stale", stale(2), 1)
 
 # cascading manga delete must not trip the chapters FK
 db.execute("UPDATE manga_progress SET is_stale = 0")
@@ -311,7 +319,7 @@ check("recalc picks a new resume chapter", row(1)["last_read_chapter_id"] != res
 
 # --- progress facts, the merge write --------------------------------------
 print("\nprogress facts:")
-FACTS = named_query(f"{SQ}/manga_progress.sq", "getProgressFactsByMangaId").replace(":mangaId", "?")
+FACTS = "SELECT started_at, completed_at FROM manga_progress WHERE manga_id = ?"
 UPSERT_FACTS = (
     named_query(f"{SQ}/manga_progress.sq", "upsertProgressFacts")
     .replace(":mangaId", "?")
@@ -374,10 +382,13 @@ check("nothing diverges once every row is recalculated", divergent(), [])
 
 
 def unseen_write(mid, statement, params=()):
-    """A write the triggers do not see, which is what the check exists to catch."""
-    db.execute("UPDATE mangas SET is_syncing = 1 WHERE _id = ?", (mid,))
+    """A write the triggers do not see, which is what the check exists to catch.
+
+    Nothing in the schema lets a statement skip the triggers any more, so the
+    write happens and the flag it raised is cleared behind it, which leaves the
+    row in the state such a write would."""
     db.execute(statement, params)
-    db.execute("UPDATE mangas SET is_syncing = 0 WHERE _id = ?", (mid,))
+    db.execute("UPDATE manga_progress SET is_stale = 0 WHERE manga_id = ?", (mid,))
 
 
 unseen_write(4, "UPDATE chapters SET read = 1 WHERE _id = 401")

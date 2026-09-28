@@ -12,16 +12,23 @@ import kotlin.math.max
  * devices, only the first one: an online sync applies the same rules to the same fields, and a rule
  * that exists twice is a rule that will eventually disagree with itself.
  *
+ * The restore itself no longer calls [mergeChapter] or [mergeHistory]. Upstream moved it into
+ * RestoreRepositoryImpl, in the data module, with the same rules written inline: read and bookmark
+ * are OR'd, the page, the read date and the duration take the maximum. The fork leaves that file as
+ * upstream ships it, so that the next upstream change to the restore merges cleanly, and keeps the
+ * rules here for the sync. Nothing enforces that the two stay the same; an upstream merge that
+ * touches restoreChapters or restoreHistory is the moment to compare them again.
+ *
  * The rules are OR, max and earliest, and that is deliberate. All three are idempotent, commutative
  * and associative, so applying the same update twice, or two updates in either order, lands on the
  * same state. Devices converge without a coordinator, which is what lets the sync server stay a
  * dumb store of deltas.
  *
- * [Chapter.bookmark] is the exception, and the reason [Chapter.version] is compared: a bookmark is
- * the one field a reader takes back, so OR would make removing one impossible -- any device still
- * holding it would put it back at the next merge. Last write wins instead, on the counter the
- * chapters trigger bumps on every read, bookmark and page change. Ties keep the local value, the
- * same way the manga-level restore keeps the local copy when the versions match.
+ * [Chapter.bookmark] is the one field a reader takes back, which OR cannot express: any device
+ * still holding a bookmark puts it back at the next merge. It is OR here all the same, because
+ * there is nothing to order two bookmarks by: the per-chapter version counter it used to be decided
+ * on was upstream's, and upstream dropped it together with the rest of that sync scaffolding. The
+ * sync will need an order of its own for this field, kept on a table the fork owns.
  */
 object SyncMerger {
 
@@ -29,10 +36,6 @@ object SyncMerger {
      * [local] contributes its identity and its source metadata: it is the copy the source last
      * refreshed, while [remote] is as old as the backup or the last sync. What [remote] contributes
      * is the reading state.
-     *
-     * The version is the higher of the two rather than the incoming one, so a merge that keeps the
-     * local bookmark cannot lower the counter that decided it and hand the next merge the opposite
-     * answer.
      */
     fun mergeChapter(local: Chapter, remote: Chapter): Chapter {
         return remote.copyFrom(local).copy(
@@ -40,8 +43,7 @@ object SyncMerger {
             mangaId = local.mangaId,
             read = local.read || remote.read,
             lastPageRead = max(local.lastPageRead, remote.lastPageRead),
-            bookmark = if (remote.version > local.version) remote.bookmark else local.bookmark,
-            version = max(local.version, remote.version),
+            bookmark = local.bookmark || remote.bookmark,
         )
     }
 

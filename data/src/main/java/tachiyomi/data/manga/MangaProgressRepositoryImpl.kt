@@ -62,6 +62,14 @@ class MangaProgressRepositoryImpl(
         }
     }
 
+    override suspend fun upsertProgressFacts(mangaId: Long, startedAt: Long?, completedAt: Long?) {
+        database.manga_progressQueries.upsertProgressFacts(
+            mangaId = mangaId,
+            startedAt = startedAt,
+            completedAt = completedAt,
+        )
+    }
+
     override suspend fun markStale(mangaId: Long) {
         database.manga_progressQueries.markStale(mangaId)
     }
